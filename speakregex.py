@@ -1,7 +1,7 @@
 import io
 import re
 import sys
-from politer import politer
+from politer import polite
 
 # Functions for getting and formatting the parse tree for a regular expression.
 
@@ -12,7 +12,7 @@ def line_and_indent(line):
     stripped_line = line.lstrip()
     return stripped_line, len(line) - len(stripped_line)
 
-def get_parse_tree(regex_string, debug=True):
+def parse_regex(regex_string, debug=True):
     '''Takes a regular expression string and returns the parse tree generated
     by the compiler when compiling it, as a string.
     
@@ -21,56 +21,40 @@ def get_parse_tree(regex_string, debug=True):
     the debug info.
     '''
     re.purge()
-    catch_tree = io.StringIO()
+    catch_debug_info = io.StringIO()
     old_stdout = sys.stdout
-    sys.stdout = catch_tree
+    sys.stdout = catch_debug_info
     fake_regex = re.compile(regex_string, re.DEBUG)
     sys.stdout = old_stdout
     if debug:
-        print(catch_tree.getvalue())
-    return catch_tree.getvalue()
+        print(catch_debug_info.getvalue())
+    return catch_debug_info.getvalue()
 
-def tree_to_list(tree):
-    '''Takes a tree of items formatted as an indented list of strings and
-    returns it formatted as a nested list.
+@polite
+def get_parse_tree(regex_string):
+    '''Takes a regular expression and generates the elements in the parse tree.
+    Indicates the end of a group of indented lines by generating the fake
+    element "end_grouping 0".
+    '''
+    last_indent = 0
+    indented_tree = parse_regex(regex_string)
+    stripped_tree = (line_and_indent(line) for line in
+                     indented_tree.splitlines())
+    for item, indent in stripped_tree:
+        if indent < last_indent:
+            yield "end_grouping 0"
+        last_indent = indent
+        yield item
     
-    The argument to tree_to_list must be a politer (as defined in the politer
-    module) over a list of strings.
-    '''
-    item = next(tree)
-    clean_item, start_indent = line_and_indent(item)
-    branch = [clean_item]
-    for item in tree:
-        clean_item, indent = line_and_indent(item)
-        if indent == start_indent:
-            branch.append(clean_item)
-        elif indent > start_indent:
-            tree.send(item)
-            branch.append(tree_to_list(tree))
-        else:
-            tree.send(item)
-            break
-    return branch
-
-def parse_regex(regex_string):
-    '''Takes a regular expression and returns the parse tree as a nested list.
-    '''
-    split_string = get_parse_tree(regex_string).splitlines()
-    tree = politer(split_string)
-    return tree_to_list(tree)
-
 # Translation functions.
-# TODO: get rid of kwarg passthrough, replace with a single keyword system.
-# delegate?
     
-def repeating(lexemes, tree, **kwargs):
+def repeating(lexemes, tree, delegate):
     min, max = lexemes[1], lexemes[2]
-    branch = politer(next(tree))
-    branch_descs = (translate(item, branch) for item in branch)
     leadin = "between {0} and {1}:\n  ".format(min, max)
-    return leadin + "\n  ".join(branch_descs)
+    subset = translate(tree)
+    return leadin + "\n  ".join(subset)
     
-def collect_literals(lexemes, tree, **kwargs):
+def collect_literals(lexemes, tree, delegate):
     literals = [lexemes[1]]
     for item in tree:
         next_command, next_character = item.split()
@@ -82,18 +66,9 @@ def collect_literals(lexemes, tree, **kwargs):
     if len(characters) == 1:
         return "the character '{0}'".format(characters[0])
     return "the characters '{0}'".format("".join(characters))
-    
-def one_character(lexemes, tree, terse=False, **kwargs):
-    char = chr(int(lexemes[1]))
-    if char == '\n':
-        char = "a new line"
-    if terse:
-        return "'{0}'".format(char)
-    return "the character '{0}'".format(char)
 
-def explicit_set(lexemes, tree, **kwargs):
-    items = politer(next(tree))
-    item_descs = (translate(item, items, terse=True) for item in items)
+def explicit_set(lexemes, tree, delegate):
+    item_descs = translate(tree, delegate='set')
     return "One of the following: " + ",".join(item_descs)
 
 categories = {
@@ -102,10 +77,17 @@ categories = {
     'category_not_word': "any non-alphanumeric character",
 }
     
-def category(lexemes, tree, **kwargs):
+def category(lexemes, tree, delegate):
     cat_type = lexemes[1]
     no_such_category = "an unknown category: {0}".format(cat_type)
     return categories.get(cat_type, no_such_category)
+
+def end_grouping(lexemes, tree, delegate):
+    '''The element 'end_grouping' is a fake element produced by get_parse_tree
+    when we reach the end of a group of elements. It indicates the end of a
+    parse tree branch by producing an artificial StopIteration exception.
+    '''    
+    raise StopIteration
     
 # The translation dictionary. Dispatch table between regex parser elements
 # and translation functions.
@@ -115,27 +97,26 @@ translation = {
     'literal': collect_literals,
     'in': explicit_set,
     'category': category,
+    'end_grouping': end_grouping,
 }
 
-def translate(word, tree, **kwargs):
-    try:
-        lexemes = word.split()
-    except AttributeError:
-        for item in reversed(word):
-            tree.send(item)
-        return "and some other stuff:"
-    try:
-        dispatch = translation[lexemes[0]]
-    except KeyError:
-        return "something I don't understand: {0}".format(word)
-    return dispatch(lexemes, tree, **kwargs)
-
+def translate(tree, delegate=None):
+    for item in tree:
+        lexemes = item.split()
+        try:
+            dispatch = translation[lexemes[0]]
+        except KeyError:
+            yield "something I don't understand: {0}".format(item)
+        else:
+            yield dispatch(lexemes, tree, delegate)
+    
 # The actual function!
 
 def speak(regex_string):
-    tree = politer(parse_regex(regex_string))
-    output = ["This regex matches:"] + [translate(item, tree) for item in tree]
-    make_speech(output)
+    tree = get_parse_tree(regex_string)
+    translation = ["This regular expression will match: "]
+    translation.extend(translate(tree))
+    make_speech(translation)
     
 def make_speech(chunks):
-    print("\n".join(chunks))
+    print("\n  ".join(chunks))
