@@ -60,15 +60,30 @@ def parse_regex(regex_string):
     return tree_to_list(tree)
 
 # Translation functions.
+# TODO: get rid of kwarg passthrough, replace with a single keyword system.
+# delegate?
     
-def repeating(lexemes, tree):
+def repeating(lexemes, tree, **kwargs):
     min, max = lexemes[1], lexemes[2]
     branch = politer(next(tree))
     branch_descs = (translate(item, branch) for item in branch)
     leadin = "between {0} and {1}:\n  ".format(min, max)
     return leadin + "\n  ".join(branch_descs)
     
-def one_character(lexemes, tree, terse=False):
+def collect_literals(lexemes, tree, **kwargs):
+    literals = [lexemes[1]]
+    for item in tree:
+        next_command, next_character = item.split()
+        if next_command != 'literal':
+            tree.send(item)
+            break
+        literals.append(next_character)
+    characters = [chr(int(literal)) for literal in literals]
+    if len(characters) == 1:
+        return "the character '{0}'".format(characters[0])
+    return "the characters '{0}'".format("".join(characters))
+    
+def one_character(lexemes, tree, terse=False, **kwargs):
     char = chr(int(lexemes[1]))
     if char == '\n':
         char = "a new line"
@@ -76,7 +91,7 @@ def one_character(lexemes, tree, terse=False):
         return "'{0}'".format(char)
     return "the character '{0}'".format(char)
 
-def explicit_set(lexemes, tree):
+def explicit_set(lexemes, tree, **kwargs):
     items = politer(next(tree))
     item_descs = (translate(item, items, terse=True) for item in items)
     return "One of the following: " + ",".join(item_descs)
@@ -87,7 +102,7 @@ categories = {
     'category_not_word': "any non-alphanumeric character",
 }
     
-def category(lexemes, tree, terse=False):
+def category(lexemes, tree, **kwargs):
     cat_type = lexemes[1]
     no_such_category = "an unknown category: {0}".format(cat_type)
     return categories.get(cat_type, no_such_category)
@@ -97,7 +112,7 @@ def category(lexemes, tree, terse=False):
     
 translation = {
     'max_repeat': repeating,
-    'literal': one_character,
+    'literal': collect_literals,
     'in': explicit_set,
     'category': category,
 }
