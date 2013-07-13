@@ -2,7 +2,6 @@ import io
 import re
 import sys
 from politer import politer
-from collections import Iterable
 
 # Functions for getting and formatting the parse tree for a regular expression.
 
@@ -107,25 +106,21 @@ def translate(word, tree, **kwargs):
     try:
         lexemes = word.split()
     except AttributeError:
-        if isinstance(word, Iterable) and not isinstance(word, str):
-            for item in reversed(word):
-                tree.send(item)
+        for item in reversed(word):
+            tree.send(item)
         return "and some other stuff:"
-    dispatch = translation.get(lexemes[0], None)
-    if not dispatch:
+    try:
+        dispatch = translation[lexemes[0]]
+    except KeyError:
         return "something I don't understand: {0}".format(lexemes)
-    elif callable(dispatch):
-        return dispatch(lexemes, tree, **kwargs)
-    else:
-        return dispatch
-    
+    return dispatch(lexemes, tree, **kwargs)
 
 # The actual function!
 
 def speak(regex_string):
     tree = politer(parse_regex(regex_string))
     output = ["This regex matches:"] + [translate(item, tree) for item in tree]
-    make_speech(output.getvalue())
+    make_speech(output)
     
-def make_speech(string):
-    print(string)
+def make_speech(chunks):
+    print("\n".join(chunks))
