@@ -83,9 +83,9 @@ def category(lexemes, tree, delegate):
     return categories.get(cat_type, no_such_category)
 
 def end_grouping(lexemes, tree, delegate):
-    '''The element 'end_grouping' is a fake element produced by get_parse_tree
-    when we reach the end of a group of elements. It indicates the end of a
-    parse tree branch by producing an artificial StopIteration exception.
+    ''''end_grouping' is a fake element produced by get_parse_tree
+    when we reach the end of a group of elements. Tell the branch iterator
+    that it is done.
     '''    
     raise StopIteration
     
