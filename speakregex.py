@@ -112,7 +112,7 @@ def translate(word, tree, **kwargs):
     try:
         dispatch = translation[lexemes[0]]
     except KeyError:
-        return "something I don't understand: {0}".format(lexemes)
+        return "something I don't understand: {0}".format(word)
     return dispatch(lexemes, tree, **kwargs)
 
 # The actual function!
