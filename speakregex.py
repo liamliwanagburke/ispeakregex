@@ -33,22 +33,27 @@ def parse_regex(regex_string, debug=True):
 @polite
 def get_parse_tree(regex_string):
     '''Takes a regular expression and generates the elements in the parse tree.
-    Indicates the end of a group of indented lines by generating the fake
-    element "end_grouping 0".
+    Indicates the beginning and end of a group of indented lines by generating
+    fake 'start_grouping' and 'end_grouping' elements.
     '''
     last_indent = 0
     indented_tree = parse_regex(regex_string)
     stripped_tree = (line_and_indent(line) for line in
                      indented_tree.splitlines())
     for item, indent in stripped_tree:
-        if indent < last_indent:
+        while indent < last_indent:
             yield "end_grouping 0"
-        last_indent = indent
+            last_indent -= 2
+        while indent > last_indent:
+            yield "start_grouping 0"
+            last_indent += 2
         yield item
     
 # Translation functions.
     
 def repeating(lexemes, tree, delegate):
+    if next(tree) != 'start_grouping 0':
+        raise ValueError
     min, max = lexemes[1], lexemes[2]
     leadin = "between {0} and {1}:\n  ".format(min, max)
     subset = translate(tree)
@@ -68,6 +73,8 @@ def collect_literals(lexemes, tree, delegate):
     return "the characters '{0}'".format("".join(characters))
 
 def explicit_set(lexemes, tree, delegate):
+    if next(tree) != 'start_grouping 0':
+        raise ValueError
     item_descs = translate(tree, delegate='set')
     return "One of the following: " + ",".join(item_descs)
 
@@ -82,10 +89,29 @@ def category(lexemes, tree, delegate):
     no_such_category = "an unknown category: {0}".format(cat_type)
     return categories.get(cat_type, no_such_category)
 
+# Some fake 'translation' functions to help iterate over the flattened tree.
+    
+def clean_up_stack(lexemes, tree, delegate):
+    '''Handle 'start_grouping' by removing the following 'end_grouping'.
+    
+    'start_grouping' is a fake element produced by get_parse_tree when we reach
+    the beginning of a subgroup of elements. Since the command immediately
+    before this should have eaten the 'start_grouping' element, hitting this
+    means that we have made a mistake somewhere. To help repair the damage,
+    iterate into the tree to find and remove the 'end_grouping' element we know
+    is there, then restore the other elements.
+    '''
+    elements = [element for element in tree]
+    for element in reversed(elements):
+        tree.send(element)
+    return "(warning, some elements may not appear correctly grouped)"
+    
 def end_grouping(lexemes, tree, delegate):
-    ''''end_grouping' is a fake element produced by get_parse_tree
-    when we reach the end of a group of elements. Tell the branch iterator
-    that it is done.
+    '''Handle 'end_grouping' by raising a StopIteration exception.
+    
+    'end_grouping' is a fake element produced by get_parse_tree when we reach
+    the end of a subgroup of elements. Raise a fake StopIteration to tell the
+    subgroup iterator that its job is done.
     '''    
     raise StopIteration
     
@@ -98,6 +124,7 @@ translation = {
     'in': explicit_set,
     'category': category,
     'end_grouping': end_grouping,
+    'start_grouping': clean_up_stack,
 }
 
 def translate(tree, delegate=None):
@@ -119,4 +146,4 @@ def speak(regex_string):
     make_speech(translation)
     
 def make_speech(chunks):
-    print("\n  ".join(chunks))
+    print("\n".join(chunks))
