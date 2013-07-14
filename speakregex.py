@@ -204,7 +204,9 @@ def text_list(items, internal_sep="", ending_sep=""):
     
 # The actual function!          
 
-def speak(regex_string):
+def speak(regex_string=None):
+    if regex_string is None:
+        regex_string = input("Enter a regular expression (unquoted, please):")
     tree = get_parse_tree(regex_string)
     translation = translate(tree)
     speech_template = "This regular expression will match {0}."
