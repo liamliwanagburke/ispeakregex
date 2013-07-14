@@ -58,26 +58,34 @@ def repeat(lexemes, tree, delegate):
     greed = " (non-greedy)" if lexemes[0] == "min_repeat" else ""
     leadin = "between {0} and {1}{2} occurrences of ".format(min, max, greed)
     subset = translate(tree)
-    return leadin + "\n  ".join(subset)
+    return leadin + text_list(subset, "followed by")
+
+special_characters = {
+    '8': 'word boundary',
+    '9': 'tab character',
+    '10': 'newline',
+}
     
 def literal(lexemes, tree, delegate):
-    literals = [lexemes[1]]
+    character = lexemes[1]
+    if character in special_characters:
+        return "a {0}".format(special_characters[character])
+    literals = [character,]
     for item in tree:
         more_lexemes = item.split()
         next_command, next_character = more_lexemes[0], more_lexemes[1]
-        if next_command != 'literal':
+        if next_command != 'literal' or next_character in special_characters:
             tree.send(item)
             break
         literals.append(next_character)
     characters = [chr(int(literal)) for literal in literals]
-    if delegate == 'set':
-        last_character = characters.pop()
-        character_list = "', '".join(characters)
-        return "a '{0}' or '{1}' character".format(character_list,
-                                                   last_character)
+    if delegate == 'set' and len(characters) > 1:
+        quoted_chars = ('"{0}"'.format(character) for character in characters)
+        char_list = text_list(quoted_chars, ending_sep="or")
+        return "a {0} character".format(char_list)
     if len(characters) == 1:
-        return "the character '{0}'".format(characters[0])
-    return "the characters '{0}'".format("".join(characters))
+        return 'the character "{0}"'.format(characters[0])
+    return 'the characters "{0}"'.format("".join(characters))
 
 def regex_in(lexemes, tree, delegate):
     start_grouping(tree)
@@ -85,7 +93,8 @@ def regex_in(lexemes, tree, delegate):
     if len(item_descs) == 1:
         return item_descs[0]
     else:
-        return "one of the following: " + ", ".join(item_descs)
+        return "one of the following: " + text_list(item_descs,
+                                                    ending_sep="or")
 
 categories = {
     'category_word': "any alphanumeric character or underscore",
@@ -101,7 +110,7 @@ def category(lexemes, tree, delegate):
 def subpattern(lexemes, tree, delegate):
     start_grouping(tree)
     pattern_name = lexemes[1]
-    subpattern = speechify(translate(tree))
+    subpattern = text_list(translate(tree), "followed by")
     if pattern_name == 'None':
         subpattern_template = "a non-captured subpattern ({0})"
     else:
@@ -117,7 +126,7 @@ def regex_any(lexemes, tree, delegate):
     
 def assert_not(lexemes, tree, delegate):
     start_grouping(tree)
-    negated_pattern = speechify(translate(tree))
+    negated_pattern = text_list(translate(tree), "followed by")
     attached_element = next(translate(tree))
     negation = "{0} (unless preceded by {1})"
     return negation.format(attached_element, negated_pattern)
@@ -180,14 +189,24 @@ def translate(tree, delegate=None):
         else:
             yield dispatch(lexemes, tree, delegate)
     
-# The actual function!
-
-def speechify(translation):
-    return ", followed by ".join(translation)
+# Text-handling functions.
+    
+def text_list(items, internal_sep="", ending_sep=""):
+    if internal_sep:
+        internal_sep += " "
+    separator = ", {0}".format(internal_sep)
+    item_list = list(items)
+    if not ending_sep:
+        return separator.join(item_list)
+    last_item = item_list.pop()
+    return "{0} {1} {2}".format(separator.join(item_list), ending_sep,
+                                last_item)
+    
+# The actual function!          
 
 def speak(regex_string):
     tree = get_parse_tree(regex_string)
     translation = translate(tree)
     speech_template = "This regular expression will match {0}."
-    speech = speech_template.format(speechify(translation))
+    speech = speech_template.format(text_list(translation, "followed by"))
     print(textwrap.fill(speech))
