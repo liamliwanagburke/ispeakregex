@@ -112,6 +112,16 @@ def groupref(lexemes, tree, delegate):
    pattern_name = lexemes[1]
    return "subpattern {0} again".format(pattern_name)
     
+def regex_any(lexemes, tree, delegate):
+    return "any character except a newline"
+    
+def assert_not(lexemes, tree, delegate):
+    start_grouping(tree)
+    negated_pattern = speechify(translate(tree))
+    attached_element = next(translate(tree))
+    negation = "{0} (unless preceded by {1})"
+    return negation.format(attached_element, negated_pattern)
+    
 # Some fake 'translation' functions to help iterate over the flattened tree.
 
 def start_grouping(tree):
@@ -156,6 +166,8 @@ translation = {
     'start_grouping': unexpected_start_grouping,
     'subpattern': subpattern,
     'groupref': groupref,
+    'any': regex_any,
+    'assert_not': assert_not,
 }
 
 def translate(tree, delegate=None):
