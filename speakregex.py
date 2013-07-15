@@ -56,20 +56,28 @@ def repeat(lexemes, tree, delegate):
     start_grouping(tree)
     min, max = lexemes[1], lexemes[2]
     greed = " (non-greedy)" if lexemes[0] == "min_repeat" else ""
-    leadin = "between {0} and {1}{2} occurrences of ".format(min, max, greed)
+    if int(max) >= sys.maxsize:
+        leadin = "{0} or more{1} occurrences of ".format(min, greed)
+    else:
+        leadin = "between {0} and {1}{2} occurrences of ".format(min, max,
+                                                                 greed)
     subset = translate(tree)
     return leadin + text_list(subset, "followed by")
 
 special_characters = {
-    '8': 'word boundary',
-    '9': 'tab character',
-    '10': 'newline',
+    '8': 'a word boundary',
+    '9': 'a tab character',
+    '10': 'a newline',
+    '34': 'a quotation mark',
+    '92': 'a backslash',
+    '59': 'a semi-colon',
+    '61': 'an equals sign',
 }
     
 def literal(lexemes, tree, delegate):
     character = lexemes[1]
     if character in special_characters:
-        return "a {0}".format(special_characters[character])
+        return "{0}".format(special_characters[character])
     literals = [character,]
     for item in tree:
         more_lexemes = item.split()
@@ -122,7 +130,7 @@ def groupref(lexemes, tree, delegate):
    return "subpattern {0} again".format(pattern_name)
     
 def regex_any(lexemes, tree, delegate):
-    return "any character except a newline"
+    return "any character"
     
 def assert_not(lexemes, tree, delegate):
     start_grouping(tree)
@@ -130,6 +138,15 @@ def assert_not(lexemes, tree, delegate):
     attached_element = next(translate(tree))
     negation = "{0} (unless preceded by {1})"
     return negation.format(attached_element, negated_pattern)
+
+locations = {
+    'at_beginning': 'the beginning of a line',
+    'at_end': 'the end of the line',
+}
+    
+def regex_at(lexemes, tree, delegate):
+    location = lexemes[1]
+    return locations[location]
     
 # Some fake 'translation' functions to help iterate over the flattened tree.
 
@@ -177,6 +194,7 @@ translation = {
     'groupref': groupref,
     'any': regex_any,
     'assert_not': assert_not,
+    'at': regex_at,
 }
 
 def translate(tree, delegate=None):
@@ -204,11 +222,18 @@ def text_list(items, internal_sep="", ending_sep=""):
     
 # The actual function!          
 
-def speak(regex_string=None):
+def speak(regex_string=None, paragraph=False):
     if regex_string is None:
         regex_string = input("Enter a regular expression (unquoted, please):")
     tree = get_parse_tree(regex_string)
-    translation = translate(tree)
-    speech_template = "This regular expression will match {0}."
-    speech = speech_template.format(text_list(translation, "followed by"))
-    print(textwrap.fill(speech))
+    translation_chunks = translate(tree)
+    speech_template = "This regular expression will match{0} {1}."
+    if paragraph:
+        translation = text_list(translation_chunks, "followed by")
+        speech = textwrap.fill(speech_template.format("", translation))
+    else:
+        wrapper = textwrap.TextWrapper(width=58, subsequent_indent="    ")
+        wrapped_lines = (wrapper.fill(line) for line in translation_chunks)
+        translation = text_list(wrapped_lines, "\n  followed by")
+        speech = speech_template.format(":\n  ", translation)
+    print(speech)
