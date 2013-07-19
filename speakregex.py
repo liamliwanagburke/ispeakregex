@@ -5,13 +5,66 @@ import textwrap
 import itertools
 from politer import polite
 
-# Functions for getting and formatting the parse tree for a regular expression.
+## Constants
+
+# Arbitrary maximum match constant to help identify * operator.
+max_match = 2 << 15
+
+# Regex to set the correct article.
+an_regex = r' a(?= [aeiou]| \"[aefhilmnorsxAEFHILMNORSX]\")'
+
+# Dictionary of special characters.
+special_characters = {
+    '8': 'a word boundary',
+    '9': 'a tab character',
+    '10': 'a newline',
+    '32': 'a space',
+    '34': 'a quotation mark',
+    '92': 'a backslash',
+    '59': 'a semi-colon',
+    '61': 'an equals sign',
+}
+
+## Functions
+
+# Text-handling functions.
 
 def line_and_indent(line):
     '''Dedents a line, returns it with the amount of previous indentation.
     '''
     stripped_line = line.lstrip()
     return stripped_line, len(line) - len(stripped_line)
+
+
+def lookup_char(text_ordinal):
+    '''Takes an ordinal, returns a readable representation of that character.
+    '''
+    if text_ordinal in special_characters:
+        return special_characters[text_ordinal]
+    return chr(int(text_ordinal))
+
+
+def quoted_chars(ordinals, concat=False):
+    chars = (lookup_char(ord) for ord in ordinals)
+    if not concat:
+        return ['"{0}"'.format(char) for char in chars]
+    else:
+        return '"{0}"'.format("".join(chars))
+
+    
+def text_list(items, internal_sep="", ending_sep=""):
+    if internal_sep:
+        internal_sep += " "
+    separator = ", {0}".format(internal_sep)
+    item_list = list(items)
+    if not ending_sep:
+        return separator.join(item_list)
+    last_item = item_list.pop()
+    return "{0} {1} {2}".format(separator.join(item_list), ending_sep,
+                                last_item)
+
+
+# Functions for getting and formatting the parse tree for a regular expression.
 
 def parse_regex(regex_string, debug=True):
     '''Returns the parse tree for a regular expression, as a string.
@@ -29,6 +82,7 @@ def parse_regex(regex_string, debug=True):
     if debug:
         print(catch_debug_info.getvalue())
     return catch_debug_info.getvalue()
+
 
 @polite
 def get_parse_tree(regex_string):
@@ -56,7 +110,7 @@ def repeat(lexemes, tree, delegate):
     start_grouping(tree)
     min, max = lexemes[1], lexemes[2]
     greed = " (non-greedy)" if lexemes[0] == "min_repeat" else ""
-    if int(max) >= sys.maxsize:
+    if int(max) >= max_match:
         leadin = "{0} or more{1} occurrences of ".format(min, greed)
     else:
         leadin = "between {0} and {1}{2} occurrences of ".format(min, max,
@@ -64,36 +118,29 @@ def repeat(lexemes, tree, delegate):
     subset = translate(tree)
     return leadin + text_list(subset, "followed by")
 
-special_characters = {
-    '8': 'a word boundary',
-    '9': 'a tab character',
-    '10': 'a newline',
-    '34': 'a quotation mark',
-    '92': 'a backslash',
-    '59': 'a semi-colon',
-    '61': 'an equals sign',
-}
-    
+
+def collect_literals(tree):
+    for item in tree:
+        lexemes = item.split()
+        if len(lexemes) < 2 or lexemes[0] != 'literal' or (lexemes[1] in
+                                                           special_characters):
+            tree.send(item)
+            break
+        yield lexemes[1]
+
+
 def literal(lexemes, tree, delegate):
     character = lexemes[1]
     if character in special_characters:
-        return "{0}".format(special_characters[character])
-    literals = [character,]
-    for item in tree:
-        more_lexemes = item.split()
-        next_command, next_character = more_lexemes[0], more_lexemes[1]
-        if next_command != 'literal' or next_character in special_characters:
-            tree.send(item)
-            break
-        literals.append(next_character)
-    characters = [chr(int(literal)) for literal in literals]
-    if delegate == 'set' and len(characters) > 1:
-        quoted_chars = ('"{0}"'.format(character) for character in characters)
-        char_list = text_list(quoted_chars, ending_sep="or")
+        return lookup_char(character)
+    literals = [character,] + list(collect_literals(tree))
+    if len(literals) == 1:
+        return "the character {0}".format(*quoted_chars(literals))
+    if delegate == 'set':
+        char_list = text_list(quoted_chars(literals), ending_sep="or")
         return "a {0} character".format(char_list)
-    if len(characters) == 1:
-        return 'the character "{0}"'.format(characters[0])
-    return 'the characters "{0}"'.format("".join(characters))
+    characters = quoted_chars(literals, concat=True)
+    return "the characters {0}".format(characters)
 
 def regex_in(lexemes, tree, delegate):
     start_grouping(tree)
@@ -148,6 +195,13 @@ def regex_at(lexemes, tree, delegate):
     location = lexemes[1]
     return locations[location]
     
+def regex_range(lexemes, tree, delegate):
+    range_regex = r'[0-9]+'
+    range_values = (re.findall(range_regex, lexeme) for lexeme in lexemes[1:])
+    range_list = (quoted_chars(val[0] for val in range_values))
+    range_desc = "a character between {0} and {1}"
+    return range_desc.format(*range_tuple)
+    
 # Some fake 'translation' functions to help iterate over the flattened tree.
 
 def start_grouping(tree):
@@ -195,6 +249,7 @@ translation = {
     'any': regex_any,
     'assert_not': assert_not,
     'at': regex_at,
+    'range': regex_range,
 }
 
 def translate(tree, delegate=None):
@@ -206,20 +261,7 @@ def translate(tree, delegate=None):
             yield "something I don't understand: {0}".format(item)
         else:
             yield dispatch(lexemes, tree, delegate)
-    
-# Text-handling functions.
-    
-def text_list(items, internal_sep="", ending_sep=""):
-    if internal_sep:
-        internal_sep += " "
-    separator = ", {0}".format(internal_sep)
-    item_list = list(items)
-    if not ending_sep:
-        return separator.join(item_list)
-    last_item = item_list.pop()
-    return "{0} {1} {2}".format(separator.join(item_list), ending_sep,
-                                last_item)
-    
+
 # The actual function!          
 
 def speak(regex_string=None, paragraph=False):
@@ -234,6 +276,6 @@ def speak(regex_string=None, paragraph=False):
     else:
         wrapper = textwrap.TextWrapper(width=58, subsequent_indent="    ")
         wrapped_lines = (wrapper.fill(line) for line in translation_chunks)
-        translation = text_list(wrapped_lines, "\n  followed by")
+        translation = text_list(wrapped_lines, "\n * followed by")
         speech = speech_template.format(":\n  ", translation)
     print(speech)
