@@ -3,7 +3,7 @@ import re
 import sys
 import textwrap
 import itertools
-from politer import polite
+from politer import polite, politer
 
 ## Constants
 
@@ -21,8 +21,6 @@ special_characters = {
     '32': 'a space',
     '34': 'a quotation mark',
     '92': 'a backslash',
-    '59': 'a semi-colon',
-    '61': 'an equals sign',
 }
 
 ## Functions
@@ -52,7 +50,7 @@ def quoted_chars(ordinals, concat=False):
         return '"{0}"'.format("".join(chars))
 
     
-def text_list(items, internal_sep="", ending_sep=""):
+def inline_list(items, internal_sep="", ending_sep=""):
     if internal_sep:
         internal_sep += " "
     separator = ", {0}".format(internal_sep)
@@ -64,7 +62,51 @@ def text_list(items, internal_sep="", ending_sep=""):
                                 last_item)
 
 
-# Functions for getting and formatting the parse tree for a regular expression.
+def is_bulleted(line):
+    return line.lstrip().startswith("*")
+
+
+def bullet_list(lines):
+    for line in lines:
+        leader = "  " if is_bulleted(line) else " * "
+        line = leader + line
+        yield line
+
+
+def clean_up_syntax(lines):
+    first_line = next(lines)
+    yield first_line
+    for line in lines:
+        if not is_bulleted(line):
+            line = "followed by " + line
+        yield line
+
+
+def punctuate(lines):
+    lines = politer(lines)
+    for line in lines:
+        try:
+            check_if_last = next(lines)
+            lines.send(check_if_last)
+        except StopIteration:
+            break
+        if not line.endswith(":"):
+            line = line + ","
+        yield line
+    line = line + "."
+    yield line
+
+
+def wrapped_list(lines):
+    wrapper = textwrap.TextWrapper()
+    for line in lines:
+        stripped, indent = line_and_indent(line)
+        wrapper.initial_indent = " " * indent
+        wrapper.subsequent_indent = " " * (indent + 5)
+        yield from wrapper.wrap(stripped)
+    
+
+# Functions for getting and formatting the parse tree.
 
 def parse_regex(regex_string, debug=True):
     '''Returns the parse tree for a regular expression, as a string.
@@ -116,7 +158,7 @@ def repeat(lexemes, tree, delegate):
         leadin = "between {0} and {1}{2} occurrences of ".format(min, max,
                                                                  greed)
     subset = translate(tree)
-    return leadin + text_list(subset, "followed by")
+    return leadin + inline_list(subset, "followed by")
 
 
 def collect_literals(tree):
@@ -137,10 +179,11 @@ def literal(lexemes, tree, delegate):
     if len(literals) == 1:
         return "the character {0}".format(*quoted_chars(literals))
     if delegate == 'set':
-        char_list = text_list(quoted_chars(literals), ending_sep="or")
+        char_list = inline_list(quoted_chars(literals), ending_sep="or")
         return "a {0} character".format(char_list)
     characters = quoted_chars(literals, concat=True)
     return "the characters {0}".format(characters)
+
 
 def regex_in(lexemes, tree, delegate):
     start_grouping(tree)
@@ -148,7 +191,7 @@ def regex_in(lexemes, tree, delegate):
     if len(item_descs) == 1:
         return item_descs[0]
     else:
-        return "one of the following: " + text_list(item_descs,
+        return "one of the following: " + inline_list(item_descs,
                                                     ending_sep="or")
 
 categories = {
@@ -162,52 +205,68 @@ def category(lexemes, tree, delegate):
     no_such_category = "an unknown category: {0}".format(cat_type)
     return categories.get(cat_type, no_such_category)
 
+
 def subpattern(lexemes, tree, delegate):
     start_grouping(tree)
     pattern_name = lexemes[1]
-    subpattern = text_list(translate(tree), "followed by")
+    subpattern = inline_list(translate(tree), "followed by")
     if pattern_name == 'None':
         subpattern_template = "a non-captured subpattern ({0})"
     else:
         subpattern_template = "subpattern {1} ({0})"
     return subpattern_template.format(subpattern, pattern_name)
     
+
 def groupref(lexemes, tree, delegate):
    pattern_name = lexemes[1]
    return "subpattern {0} again".format(pattern_name)
+
     
 def regex_any(lexemes, tree, delegate):
     return "any character"
+
     
 def assert_not(lexemes, tree, delegate):
     start_grouping(tree)
-    negated_pattern = text_list(translate(tree), "followed by")
+    negated_pattern = inline_list(translate(tree), "followed by")
     attached_element = next(translate(tree))
     negation = "{0} (unless preceded by {1})"
     return negation.format(attached_element, negated_pattern)
+
 
 locations = {
     'at_beginning': 'the beginning of a line',
     'at_end': 'the end of the line',
 }
+
     
 def regex_at(lexemes, tree, delegate):
     location = lexemes[1]
     return locations[location]
+
     
 def regex_range(lexemes, tree, delegate):
     range_regex = r'[0-9]+'
     range_values = (re.findall(range_regex, lexeme) for lexeme in lexemes[1:])
     range_list = (quoted_chars(val[0] for val in range_values))
     range_desc = "a character between {0} and {1}"
-    return range_desc.format(*range_tuple)
+    return range_desc.format(*range_list)
     
 # Some fake 'translation' functions to help iterate over the flattened tree.
 
 def start_grouping(tree):
+    '''Verify that the next element is a 'start_grouping' element and remove
+    it.
+    
+    'start_grouping' is a fake element produced by get_parse_tree when we reach
+    the beginning of a subgroup of elements. Elements that expect a subgroup
+    use this function to verify that a subgroup is about to start and remove
+    the fake element from the list.
+    '''
     if next(tree) != 'start_grouping 0':
         raise ValueError
     return True
+
     
 def unexpected_start_grouping(lexemes, tree, delegate):
     '''Handle 'start_grouping' by removing the following 'end_grouping'.
@@ -223,6 +282,7 @@ def unexpected_start_grouping(lexemes, tree, delegate):
     for element in reversed(elements):
         tree.send(element)
     return "(warning, some elements may not appear correctly grouped)"
+
     
 def end_grouping(lexemes, tree, delegate):
     '''Handle 'end_grouping' by raising a StopIteration exception.
@@ -252,6 +312,7 @@ translation = {
     'range': regex_range,
 }
 
+
 def translate(tree, delegate=None):
     for item in tree:
         lexemes = item.split()
@@ -260,22 +321,22 @@ def translate(tree, delegate=None):
         except KeyError:
             yield "something I don't understand: {0}".format(item)
         else:
-            yield dispatch(lexemes, tree, delegate)
+            result = dispatch(lexemes, tree, delegate)
+            if isinstance(result, str):
+                yield result
+            else:
+                yield from result
 
 # The actual function!          
 
-def speak(regex_string=None, paragraph=False):
+def speak(regex_string=None):
     if regex_string is None:
         regex_string = input("Enter a regular expression (unquoted, please):")
     tree = get_parse_tree(regex_string)
-    translation_chunks = translate(tree)
-    speech_template = "This regular expression will match{0} {1}."
-    if paragraph:
-        translation = text_list(translation_chunks, "followed by")
-        speech = textwrap.fill(speech_template.format("", translation))
-    else:
-        wrapper = textwrap.TextWrapper(width=58, subsequent_indent="    ")
-        wrapped_lines = (wrapper.fill(line) for line in translation_chunks)
-        translation = text_list(wrapped_lines, "\n * followed by")
-        speech = speech_template.format(":\n  ", translation)
-    print(speech)
+    translation = translate(tree)
+    syntax_pass = clean_up_syntax(translation)
+    punctuation_pass = punctuate(syntax_pass)
+    bulleted_pass = bullet_list(punctuation_pass)
+    final_translation = wrapped_list(bulleted_pass)
+    print("This regular expression will match:")
+    print("\n".join(final_translation))
