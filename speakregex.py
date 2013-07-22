@@ -31,17 +31,20 @@ unusual_characters = {
 
 ## Classes
 
-class OxfordList(collections.Iterable):
-    '''A generator wrapper that separates out the last item.
+class Countable(collections.Iterator):
+    '''A generator wrapper that provides some length-measuring ability.
     
-    When handling text it is often useful, for grammatical reasons, to separate
-    the last item from a list -- but with generators this is harder to do. To
-    make this easier, an OxfordList delivers all the items in a list but one
-    when iterated over, then places that item in its 'last_item' attribute.
+    While generators have memory and style advantages over lists, the inability
+    to test their length (since they may be infinite) makes some problems
+    messy. The Countable class provides some primitive methods for solving
+    length-related problems without pulling the whole generator stream into
+    a list.
     '''
     def __init__(self, iterable):
         self.generator = iter(iterable)
-    def __iter__(self):
+    def __next__(self):
+        return next(self.generator)
+    def all_but_last(self):
         item = next(self.generator)
         while True:
             try:
@@ -50,14 +53,7 @@ class OxfordList(collections.Iterable):
                 self.last_item = item
                 raise
             yield item
-            item = next_item 
-
-
-class Measurable(collections.Iterator):
-    def __init__(self, iterable):
-        self.generator = iter(iterable)
-    def __next__(self):
-        return next(self.generator)
+            item = next_item
     def at_least(self, length):
         self.generator, measure = itertools.tee(self.generator)
         try:
@@ -97,20 +93,19 @@ def inline_list(items, internal_sep="", ending_sep=""):
         internal_sep += " "
     separator = ", {0}".format(internal_sep)
     if ending_sep:
-        items = Measurable(conjoined(items, ending_sep))
+        items = Countable(conjoined(items, ending_sep))
     if items.at_least(3):
         return separator.join(items)
     return " ".join(items)
 
 
 def conjoined(items, conjunction):
-    measure_items = Measurable(items)
-    if not measure_items.at_least(3):
-        first_item, last_item = next(measure_items), next(measure_items)
+    item_list = Countable(items)
+    if not item_list.at_least(3):
+        first_item, last_item = next(item_list), next(item_list)
         yield "{0} {1} {2}".format(first_item, conjunction, last_item)
         raise StopIteration
-    item_list = OxfordList(measure_items)
-    yield from item_list
+    yield from item_list.all_but_last()
     last_item = conjunction + " " + item_list.last_item
     yield last_item
 
@@ -121,12 +116,12 @@ def is_bulleted(line):
 
 def collapsible_list(lines, intro_line="", paren=False):
     ending = ")" if paren else ""
-    lines = Measurable(lines)
+    lines = Countable(lines)
     if not lines.at_least(2):
         yield intro_line + " " + next(lines) + ending
         raise StopIteration
-    lines = OxfordList(bullet_list(lines, intro_line))
-    yield from lines
+    lines = Countable(bullet_list(lines, intro_line))
+    yield from lines.all_but_last()
     yield lines.last_item + ending
     
 
@@ -149,8 +144,8 @@ def clean_up_syntax(lines):
 
 
 def punctuate(lines):
-    lines = OxfordList(lines)
-    for line in lines:
+    lines = Countable(lines)
+    for line in lines.all_but_last():
         if not line.endswith(":"):
             line = line + ","
         yield line
@@ -255,9 +250,9 @@ def literal(lexemes, tree, delegate):
 def regex_in(lexemes, tree, delegate):
     start_grouping(tree)
     set_items = translate(tree, delegate='set')
-    item_descs = list(set_items)
-    if len(item_descs) == 1:
-        return item_descs[0]
+    item_descs = Countable(set_items)
+    if not item_descs.at_least(2):
+        return next(item_descs)
     else:
         conjoined_descs = conjoined(item_descs, "or")
         return bullet_list(conjoined_descs, "one of the following:")
@@ -294,6 +289,8 @@ def groupref(lexemes, tree, delegate):
 def regex_any(lexemes, tree, delegate):
     return "any character"
 
+def regex_assert(lexemes, tree, delegate):
+    pass
     
 def assert_not(lexemes, tree, delegate):
     start_grouping(tree)
