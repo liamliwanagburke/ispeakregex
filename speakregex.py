@@ -93,21 +93,21 @@ def inline_list(items, internal_sep="", ending_sep=""):
         internal_sep += " "
     separator = ", {0}".format(internal_sep)
     if ending_sep:
-        items = Countable(conjoined(items, ending_sep))
-    if items.at_least(3):
+        items = list(conjoined(items, ending_sep))
+    if len(items) < 3:
         return separator.join(items)
     return " ".join(items)
 
 
 def conjoined(items, conjunction):
-    item_list = Countable(items)
-    if not item_list.at_least(3):
-        first_item, last_item = next(item_list), next(item_list)
+    item_list = list(items)
+    if len(items) < 3:
+        first_item, last_item = item_list[0], item_list[1]
         yield "{0} {1} {2}".format(first_item, conjunction, last_item)
-        raise StopIteration
-    yield from item_list.all_but_last()
-    last_item = conjunction + " " + item_list.last_item
-    yield last_item
+    else:
+        last_item = conjunction + " " + item_list.pop()
+        yield from item_list
+        yield last_item
 
 
 def is_bulleted(line):
@@ -116,13 +116,14 @@ def is_bulleted(line):
 
 def collapsible_list(lines, intro_line="", paren=False):
     ending = ")" if paren else ""
-    lines = Countable(lines)
-    if not lines.at_least(2):
-        yield intro_line + " " + next(lines) + ending
-        raise StopIteration
-    lines = Countable(bullet_list(lines, intro_line))
-    yield from lines.all_but_last()
-    yield lines.last_item + ending
+    lines = list(lines)
+    if len(lines) == 1:
+        yield intro_line + " " + lines[0] + ending
+    else:
+        lines = list(bullet_list(lines, intro_line))
+        last_line = lines.pop()
+        yield from lines
+        yield last_line + ending
     
 
 def bullet_list(lines, intro_line=None):
@@ -144,13 +145,13 @@ def clean_up_syntax(lines):
 
 
 def punctuate(lines):
-    lines = Countable(lines)
-    for line in lines.all_but_last():
+    lines = list(lines)
+    last_line = lines.pop() + "."
+    for line in lines:
         if not line.endswith(":"):
             line = line + ","
         yield line
-    line = lines.last_item + "."
-    yield line
+    yield last_line
 
 
 def wrapped_list(lines):
@@ -250,9 +251,9 @@ def literal(lexemes, tree, delegate):
 def regex_in(lexemes, tree, delegate):
     start_grouping(tree)
     set_items = translate(tree, delegate='set')
-    item_descs = Countable(set_items)
-    if not item_descs.at_least(2):
-        return next(item_descs)
+    item_descs = list(set_items)
+    if len(item_descs) == 1:
+        return item_descs[0]
     else:
         conjoined_descs = conjoined(item_descs, "or")
         return bullet_list(conjoined_descs, "one of the following:")
@@ -289,8 +290,10 @@ def groupref(lexemes, tree, delegate):
 def regex_any(lexemes, tree, delegate):
     return "any character"
 
+
 def regex_assert(lexemes, tree, delegate):
     pass
+
     
 def assert_not(lexemes, tree, delegate):
     start_grouping(tree)
@@ -332,7 +335,6 @@ def start_grouping(tree):
     if next(tree) != 'start_grouping 0':
         raise ValueError
     return True
-
     
 def unexpected_start_grouping(lexemes, tree, delegate):
     '''Handle 'start_grouping' by removing the following 'end_grouping'.
@@ -344,11 +346,7 @@ def unexpected_start_grouping(lexemes, tree, delegate):
     iterate into the tree to find and remove the 'end_grouping' element we know
     is there, then restore the other elements.
     '''
-    elements = []
-    for element in tree:
-        if element == 'end_grouping 0':
-            break
-        elements.append(element)
+    elements = list(itertools.takewhile(grouped, tree))
     for element in reversed(elements):
         tree.send(element)
     return "(warning, some elements may not appear correctly grouped)"
@@ -362,6 +360,8 @@ def end_grouping(lexemes, tree, delegate):
     subgroup iterator that its job is done.
     '''    
     raise StopIteration
+    
+def grouped(line): return line != 'end_grouping 0'
     
 # The translation dictionary. Dispatch table between regex parser elements
 # and translation functions.
