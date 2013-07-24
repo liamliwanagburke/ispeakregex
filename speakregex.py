@@ -25,43 +25,16 @@ special_characters = {
 }
 
 unusual_characters = {
+    '36': 'a dollar sign',
+    '39': 'an apostrophe',
+    '40': 'a left parenthesis',
+    '41': 'a right parenthesis',
+    '44': 'a comma',
     '59': 'a semicolon',
     '61': 'an equals sign',
-}
-
-## Classes
-
-class Countable(collections.Iterator):
-    '''A generator wrapper that provides some length-measuring ability.
+    '124': 'a vertical bar',
     
-    While generators have memory and style advantages over lists, the inability
-    to test their length (since they may be infinite) makes some problems
-    messy. The Countable class provides some primitive methods for solving
-    length-related problems without pulling the whole generator stream into
-    a list.
-    '''
-    def __init__(self, iterable):
-        self.generator = iter(iterable)
-    def __next__(self):
-        return next(self.generator)
-    def all_but_last(self):
-        item = next(self.generator)
-        while True:
-            try:
-                next_item = next(self.generator)
-            except StopIteration:
-                self.last_item = item
-                raise
-            yield item
-            item = next_item
-    def at_least(self, length):
-        self.generator, measure = itertools.tee(self.generator)
-        try:
-            for i in range(length):
-                next(measure)
-        except StopIteration:
-            return False
-        return True
+}
 
 ## Functions
 
@@ -94,14 +67,14 @@ def inline_list(items, internal_sep="", ending_sep=""):
     separator = ", {0}".format(internal_sep)
     if ending_sep:
         items = list(conjoined(items, ending_sep))
-    if len(items) < 3:
+    if len(items) > 2:
         return separator.join(items)
     return " ".join(items)
 
 
 def conjoined(items, conjunction):
     item_list = list(items)
-    if len(items) < 3:
+    if len(item_list) < 3:
         first_item, last_item = item_list[0], item_list[1]
         yield "{0} {1} {2}".format(first_item, conjunction, last_item)
     else:
@@ -139,7 +112,7 @@ def clean_up_syntax(lines):
     first_line = next(lines)
     yield first_line
     for line in lines:
-        if not is_bulleted(line):
+        if not (is_bulleted(line) or line.startswith("(") or line == "or:"):
             line = "followed by " + line
         yield line
 
@@ -164,7 +137,7 @@ def wrapped_list(lines):
 
 # Functions for getting and formatting the parse tree.
 
-def parse_regex(regex_string, debug=True):
+def parse_regex(regex_string):
     '''Returns the parse tree for a regular expression, as a string.
     
     Rather than reinvent the wheel, get_parse_tree just compiles the regex you
@@ -175,15 +148,18 @@ def parse_regex(regex_string, debug=True):
     catch_debug_info = io.StringIO()
     old_stdout = sys.stdout
     sys.stdout = catch_debug_info
-    fake_regex = re.compile(regex_string, re.DEBUG)
+    try:
+        fake_regex = re.compile(regex_string, re.DEBUG)
+    except re.error as err:
+        sys.stdout = old_stdout
+        sys.exit("Unfortunately, your regular expression is not valid. The "
+                 "error received was: " + str(err))
     sys.stdout = old_stdout
-    if debug:
-        print(catch_debug_info.getvalue())
     return catch_debug_info.getvalue()
 
 
 @polite
-def get_parse_tree(regex_string):
+def get_parse_tree(regex_string, debug=True):
     '''Yields the parse tree for a regular expression, element by element.
     
     Indicates the beginning and end of a group of indented lines by generating
@@ -195,23 +171,31 @@ def get_parse_tree(regex_string):
                      indented_tree.splitlines())
     for item, indent in stripped_tree:
         while indent < last_indent:
+            if debug: print("end group")
             yield "end_grouping 0"
             last_indent -= 2
         while indent > last_indent:
+            if debug: print("start group")
             yield "start_grouping 0"
             last_indent += 2
+        if debug: print(item)
         yield item
     
 # Translation functions.
     
 def repeat(lexemes, tree, delegate):
     start_grouping(tree)
-    min, max = lexemes[1], lexemes[2]
+    min, max = int(lexemes[1]), int(lexemes[2])
     greed = " (non-greedy)" if lexemes[0] == "min_repeat" else ""
-    if int(max) >= max_match:
+    if min == max:
+        if min == 1:
+            return next(translate(tree))
+        else:
+            leadin = "{0} occurrences of".format(min)    
+    elif max >= max_match:
         leadin = "{0} or more{1} occurrences of".format(min, greed)
-    elif int(min) == 0:
-        if int(max) == 1:
+    elif min == 0:
+        if max == 1:
             leadin = "up to {0}{1} occurrence of".format(max, greed)
         else:
             leadin = "up to {0}{1} occurrences of".format(max, greed)
@@ -231,6 +215,8 @@ def collect_literals(tree):
             break
         yield lexemes[1]
 
+def not_literal(lexemes, tree, delegate):
+    return "any character except " + literal(lexemes, tree, delegate)
 
 def literal(lexemes, tree, delegate):
     character = lexemes[1]
@@ -250,21 +236,43 @@ def literal(lexemes, tree, delegate):
 
 def regex_in(lexemes, tree, delegate):
     start_grouping(tree)
+    modifier = next(tree)
+    if modifier == 'negate None':
+        intro = "any character except "    
+    else:
+        intro = ""
+        tree.send(modifier)
     set_items = translate(tree, delegate='set')
     item_descs = list(set_items)
     if len(item_descs) == 1:
-        return item_descs[0]
+        if modifier == 'negate None' and item_descs[0] in categories.values():
+            item_descs[0] = category_antonyms[item_descs[0]]
+            intro = ""
+        return intro + item_descs[0]
     else:
         conjoined_descs = conjoined(item_descs, "or")
-        return bullet_list(conjoined_descs, "one of the following:")
+        return bullet_list(conjoined_descs, intro + "one of the following")
 
 categories = {
     'category_word': "any alphanumeric character or underscore",
     'category_space': "any whitespace character",
+    'category_not_space': "any non-whitespace character",
     'category_not_word': "any non-alphanumeric character",
     'category_digit': "any digit",
+    'category_not_digit': "any non-digit character",
 }
-    
+
+opposed_categories = {
+    'category_word': 'category_not_word',
+    'category_space': 'category_not_space',
+    'category_digit': 'category_not_digit',
+}
+
+category_antonyms = {categories[k]: categories[v] for k, v in
+                     opposed_categories.items()}
+category_antonyms.update({v: k for k, v in category_antonyms.items()})
+
+ 
 def category(lexemes, tree, delegate):
     cat_type = lexemes[1]
     no_such_category = "an unknown category: {0}".format(cat_type)
@@ -278,7 +286,7 @@ def subpattern(lexemes, tree, delegate):
         subpattern_intro = "a non-captured subgroup consisting of"
     else:
         subpattern_intro = "subgroup #{0}, consisting of".format(pattern_name)
-    subpattern = translate(tree)
+    subpattern = clean_up_syntax(translate(tree))
     return collapsible_list(subpattern, subpattern_intro)
 
 
@@ -292,8 +300,22 @@ def regex_any(lexemes, tree, delegate):
 
 
 def regex_assert(lexemes, tree, delegate):
-    pass
+    start_grouping(tree)
+    asserted = clean_up_syntax(translate(tree))
+    assertion = "(but only if followed by"
+    return collapsible_list(asserted, assertion, paren=True)
 
+
+def regex_branch(lexemes, tree, delegate):
+    start_grouping(tree)
+    branch = translate(tree)
+    first_branch = list(bullet_list(clean_up_syntax(branch), "either"))
+    if next(tree) != "or":
+        raise ValueError
+    start_grouping(tree)
+    branch = translate(tree)
+    second_branch = list(bullet_list(clean_up_syntax(branch), "or"))
+    return itertools.chain(first_branch, second_branch)
     
 def assert_not(lexemes, tree, delegate):
     start_grouping(tree)
@@ -346,7 +368,7 @@ def unexpected_start_grouping(lexemes, tree, delegate):
     iterate into the tree to find and remove the 'end_grouping' element we know
     is there, then restore the other elements.
     '''
-    elements = list(itertools.takewhile(grouped, tree))
+    elements = itertools.takewhile(grouped, tree)
     for element in reversed(elements):
         tree.send(element)
     return "(warning, some elements may not appear correctly grouped)"
@@ -370,6 +392,7 @@ translation = {
     'max_repeat': repeat,
     'min_repeat': repeat,
     'literal': literal,
+    'not_literal': not_literal,
     'in': regex_in,
     'category': category,
     'end_grouping': end_grouping,
@@ -377,8 +400,10 @@ translation = {
     'subpattern': subpattern,
     'groupref': groupref,
     'any': regex_any,
+    'assert': regex_assert,
     'assert_not': assert_not,
     'at': regex_at,
+    'branch': regex_branch,
     'range': regex_range,
 }
 
