@@ -2,9 +2,8 @@ import io
 import re
 import sys
 import textwrap
-import collections
 import itertools
-from politer import polite, politer
+from politer import polite
 
 ## Constants
 
@@ -16,7 +15,6 @@ an_regex = r' a(?= [aeiou]| \"[aefhilmnorsxAEFHILMNORSX]\")'
 
 # Dictionary of special characters.
 special_characters = {
-    '8': 'a word boundary',
     '9': 'a tab character',
     '10': 'a newline',
     '32': 'a space',
@@ -35,6 +33,8 @@ unusual_characters = {
     '124': 'a vertical bar',
     
 }
+
+debug = False
 
 ## Functions
 
@@ -87,8 +87,7 @@ def is_bulleted(line):
     return line.lstrip().startswith("*")
 
 
-def collapsible_list(lines, intro_line="", paren=False):
-    ending = ")" if paren else ""
+def collapsible_list(lines, intro_line="", ending=""):
     lines = list(lines)
     if len(lines) == 1:
         yield intro_line + " " + lines[0] + ending
@@ -109,19 +108,21 @@ def bullet_list(lines, intro_line=None):
 
 
 def clean_up_syntax(lines):
-    first_line = next(lines)
-    yield first_line
+    last_line = next(lines)
+    yield last_line
     for line in lines:
-        if not (is_bulleted(line) or line.startswith("(") or line == "or:"):
+        if not (is_bulleted(line) or line.startswith("(") or
+                last_line.endswith(")") or line == "or:"):
             line = "followed by " + line
         yield line
+        last_line = line
 
 
 def punctuate(lines):
     lines = list(lines)
     last_line = lines.pop() + "."
     for line in lines:
-        if not line.endswith(":"):
+        if not line.endswith((":", ")")):
             line = line + ","
         yield line
     yield last_line
@@ -159,7 +160,7 @@ def parse_regex(regex_string):
 
 
 @polite
-def get_parse_tree(regex_string, debug=True):
+def get_parse_tree(regex_string):
     '''Yields the parse tree for a regular expression, element by element.
     
     Indicates the beginning and end of a group of indented lines by generating
@@ -298,13 +299,15 @@ def groupref(lexemes, tree, delegate):
 def regex_any(lexemes, tree, delegate):
     return "any character"
 
-
 def regex_assert(lexemes, tree, delegate):
     start_grouping(tree)
+    positive = lexemes[0] == 'assert'
+    lookahead = lexemes[1] == '1'
+    direction = "(if, at this point, " if lookahead else "(if, immediately preceding this, "
+    positivity = "we could match" if positive else "we could not match"
+    assertion = direction + positivity
     asserted = clean_up_syntax(translate(tree))
-    assertion = "(but only if followed by"
-    return collapsible_list(asserted, assertion, paren=True)
-
+    return collapsible_list(asserted, assertion, ending=")")
 
 def regex_branch(lexemes, tree, delegate):
     start_grouping(tree)
@@ -316,24 +319,18 @@ def regex_branch(lexemes, tree, delegate):
     branch = translate(tree)
     second_branch = list(bullet_list(clean_up_syntax(branch), "or"))
     return itertools.chain(first_branch, second_branch)
-    
-def assert_not(lexemes, tree, delegate):
-    start_grouping(tree)
-    negated_pattern = list(clean_up_syntax(translate(tree)))
-    attached_element = next(translate(tree))
-    negation = "{0} (unless preceded by".format(attached_element)
-    return collapsible_list(negated_pattern, negation, paren=True)
-
 
 locations = {
     'at_beginning': 'the beginning of a line',
     'at_end': 'the end of the line',
+    'at_boundary': 'a word boundary',
 }
 
     
 def regex_at(lexemes, tree, delegate):
     location = lexemes[1]
-    return locations[location]
+    no_such_location = "an unknown location: {0}".format(location)
+    return locations.get(location, no_such_location)
 
     
 def regex_range(lexemes, tree, delegate):
@@ -401,7 +398,7 @@ translation = {
     'groupref': groupref,
     'any': regex_any,
     'assert': regex_assert,
-    'assert_not': assert_not,
+    'assert_not': regex_assert,
     'at': regex_at,
     'branch': regex_branch,
     'range': regex_range,
@@ -422,16 +419,27 @@ def translate(tree, delegate=None):
             else:
                 yield from result
 
+def check_for_quotes(string):
+    if (string.startswith('"') and string.endswith('"')) or (
+        string.startswith('/') and string.endswith('/')) or (
+        string.startswith("'") and string.endswith("'")):
+        return string[1:-1]
+    return string
+
+quotes_regex = r'''^(["/']).*(["/'])$'''
+
 # The actual function!          
 
-def speak(regex_string=None):
+def speak(regex_string=None, clean_quotes=True):
     if regex_string is None:
-        regex_string = input("Enter a regular expression (unquoted, please):")
-    speech_intro = "This regular expression will match"
+        regex_string = input("Enter a regular expression:")
+    if clean_quotes:
+        regex_string = check_for_quotes(regex_string)
     tree = get_parse_tree(regex_string)
     translation = translate(tree)
     syntax_pass = clean_up_syntax(translation)
     punctuation_pass = punctuate(syntax_pass)
+    speech_intro = "This regular expression will match"
     bulleted_translation = collapsible_list(punctuation_pass, speech_intro)
     final_translation = wrapped_list(bulleted_translation)
     print("\n".join(final_translation))
