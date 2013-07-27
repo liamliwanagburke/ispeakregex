@@ -13,8 +13,10 @@ max_match = 2 << 15
 # Regex to set the correct article.
 an_regex = r' a(?= [aeiou]| \"[aefhilmnorsxAEFHILMNORSX]\")'
 
-# Dictionary of special characters.
+# Dictionary of special characters that can't be usefully printed.
 special_characters = {
+    '7': 'the alert character',
+    '8': 'a backspace',
     '9': 'a tab character',
     '10': 'a newline',
     '32': 'a space',
@@ -22,6 +24,8 @@ special_characters = {
     '92': 'a backslash',
 }
 
+# Dictionary of unusual characters that can be usefully printed with other
+# characters, but should be spelled out when by themselves.
 unusual_characters = {
     '36': 'a dollar sign',
     '39': 'an apostrophe',
@@ -29,9 +33,11 @@ unusual_characters = {
     '41': 'a right parenthesis',
     '44': 'a comma',
     '59': 'a semicolon',
+    '60': 'a less than sign',
     '61': 'an equals sign',
+    '62': 'a greater than sign',
+    '95': 'an underscore',
     '124': 'a vertical bar',
-    
 }
 
 debug = False
@@ -299,15 +305,18 @@ def groupref(lexemes, tree, delegate):
 def regex_any(lexemes, tree, delegate):
     return "any character"
 
+
 def regex_assert(lexemes, tree, delegate):
     start_grouping(tree)
     positive = lexemes[0] == 'assert'
     lookahead = lexemes[1] == '1'
-    direction = "(if, at this point, " if lookahead else "(if, immediately preceding this, "
-    positivity = "we could match" if positive else "we could not match"
-    assertion = direction + positivity
+    direction = ("we could {0}now match" if lookahead else
+                 "we could {0}have just matched")
+    positivity = "" if positive else "not "
+    assertion = "(if " + direction.format(positivity)
     asserted = clean_up_syntax(translate(tree))
     return collapsible_list(asserted, assertion, ending=")")
+
 
 def regex_branch(lexemes, tree, delegate):
     start_grouping(tree)
@@ -323,7 +332,10 @@ def regex_branch(lexemes, tree, delegate):
 locations = {
     'at_beginning': 'the beginning of a line',
     'at_end': 'the end of the line',
-    'at_boundary': 'a word boundary',
+    'at_boundary': 'the beginning or end of a word',
+    'at_non_boundary': '(if this is not the beginning or end of a word)',
+    'at_beginning_string': 'the beginning of the string',
+    'at_end_string': 'the end of the string',
 }
 
     
@@ -365,7 +377,7 @@ def unexpected_start_grouping(lexemes, tree, delegate):
     iterate into the tree to find and remove the 'end_grouping' element we know
     is there, then restore the other elements.
     '''
-    elements = itertools.takewhile(grouped, tree)
+    elements = list(itertools.takewhile(grouped, tree))
     for element in reversed(elements):
         tree.send(element)
     return "(warning, some elements may not appear correctly grouped)"
