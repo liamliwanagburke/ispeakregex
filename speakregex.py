@@ -197,12 +197,7 @@ def parse_regex(regex_string):
     catch_debug_info = io.StringIO()
     old_stdout = sys.stdout
     sys.stdout = catch_debug_info
-    try:
-        fake_regex = re.compile(regex_string, re.DEBUG)
-    except re.error as err:
-        sys.stdout = old_stdout
-        sys.exit("Unfortunately, your regular expression is not valid. The "
-                 "error received was: " + str(err))
+    fake_regex = re.compile(regex_string, re.DEBUG)
     sys.stdout = old_stdout
     return catch_debug_info.getvalue()
 
@@ -250,7 +245,7 @@ def regex_repeat(lexemes, tree, delegate):
             leadin = "up to {0}{1} occurrences of".format(max, greed)
     else:
         leadin = "between {0} and {1}{2} occurrences of".format(min, max,
-                                                                 greed)
+                                                                greed)
     subset = clean_up_syntax(translate(tree))
     return collapsible_list(subset, leadin)
 
@@ -497,4 +492,9 @@ def speak(regex_string=None, clean_quotes=True):
     speech_intro = "This regular expression will match"
     bulleted_translation = collapsible_list(punctuation_pass, speech_intro)
     final_translation = wrapped_list(bulleted_translation)
-    print("\n".join(final_translation))
+    try:
+        print("\n".join(final_translation))
+    except re.error as err:
+        sys.stdout = sys.__stdout__
+        print("Unfortunately, your regular expression is not valid, because it"
+              " contains a " + str(err) + ".")
