@@ -86,30 +86,96 @@ Functions exported:
 	@polite: decorator function that makes a generator function "polite"
 """
 
-from functools import wraps
+import functools
+import collections
 
 def politer(iterable):
     '''Passed an iterable object, returns a 'polite' iterator, which stores
     values you send to it and puts them on 'top' of the iterator, returning
     them first before continuing.
     '''
-    iterable = iter(iterable)
-    values = []
-    while True:
-        if values:
-            value = (yield values.pop())
-        else:
-            value = (yield next(iterable))
-        while value is not None:
-            values.append(value)
-            value = (yield None)
+    return Politer(iterable)
 
 def polite(func):
     '''Decorator function that wraps a generator function and makes it
     'polite,' so that it can take values you send to it and put them on 'top'
     of its stack of values, returning them first before continuing.
     '''
-    @wraps(func)
+    @functools.wraps(func)
     def wrapped(*args, **kwargs):
-        return politer(func(*args, **kwargs))
+        return Politer(func(*args, **kwargs))
     return wrapped
+    
+class Politer(collections.Iterator, collections.Sequence):
+    def __init__(self, iterable):
+        self.generator = iter(iterable)
+        self.values = collections.deque()
+        self.previous = None
+        
+    def __next__(self):
+        if not self.values:
+            if not self._advance():
+                raise StopIteration
+        value = self.values.popleft()
+        self.previous = value
+        return value     
+        
+    def send(self, *values):
+        self.values.extendleft(reversed(values))      
+        
+    def prev(self):
+        if self.previous is None:
+            raise StopIteration
+        self.values.appendleft(self.previous)
+        self.previous = None
+    
+    def __iter__(self):
+        return self
+    
+    def at_least(self, length):
+        return self._advance_until(lambda: len(self.values) >= length)
+        
+    def __len__(self):
+        self._dump()
+        return len(self.values)
+    
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return self._getslice(index)
+        elif isinstance(index, int):
+            if not self._advance_until(lambda: len(self.values) >= index):
+                raise IndexError("politer index out of range")
+            return self.values[index]
+        else:
+            raise TypeError("politer indices must be integers")
+            
+    def _getslice(self, sliceobj):
+        start, stop, step = sliceobj.start, sliceobj.stop, sliceobj.step
+        if start < 0 or stop < 0:
+            self._dump()
+        else:
+            self._advance_until(lambda: len(self.values) >= stop)
+        return self.values[sliceobj] 
+        
+    def _advance(self):
+        try:
+            self.values.append(next(self.generator))
+            return True
+        except StopIteration:
+            return False
+            
+    def _dump(self):
+        self.values.extend(self.generator)
+        
+    def __contains__(self, value):
+        return self_advance_until(lambda: value in self.values)
+        
+    def _advance_until(self, func):
+        while not func():
+            if not self._advance():
+                return False
+        return True
+        
+    def count(self, val):
+        self._dump()
+        return self.values.count(val)
