@@ -11,7 +11,10 @@ from politer import polite
 max_match = 2 << 15
 
 # Regex to set the correct article.
-an_regex = r' a(?= [aeiou]| \"[aefhilmnorsxAEFHILMNORSX]\")'
+an_regex = r'\ba(?= [aeiou]| \"[aefhilmnorsxAEFHILMNORSX]\")'
+
+# Regex to remove quotes from input.
+quotes_regex = r'''^r?(["/'])(.*)\1$'''
 
 # Dictionary of special characters that can't be usefully printed.
 special_characters = {
@@ -40,6 +43,41 @@ unusual_characters = {
     '124': 'a vertical bar',
 }
 
+# Category definitions.
+categories = {
+    'category_word': "any alphanumeric character or underscore",
+    'category_space': "any whitespace character",
+    'category_not_space': "any non-whitespace character",
+    'category_not_word': "any non-alphanumeric character",
+    'category_digit': "any digit",
+    'category_not_digit': "any non-digit character",
+}
+
+# For the specific situation where you have a set complement that contains
+# only a category, we build a dictionary of category complements so that we can
+# substitute the complementary category. Ideally we would ask you not to do
+# this in your regex, but there you go.
+opposed_categories = {
+    'category_word': 'category_not_word',
+    'category_space': 'category_not_space',
+    'category_digit': 'category_not_digit',
+}
+
+category_complements = {categories[k]: categories[v] for k, v in
+                     opposed_categories.items()}
+category_complements.update({v: k for k, v in category_complements.items()})
+
+# Location definitions.
+locations = {
+    'at_beginning': 'the beginning of a line',
+    'at_end': 'the end of the line',
+    'at_boundary': 'the beginning or end of a word',
+    'at_non_boundary': '(if not at the beginning or end of a word)',
+    'at_beginning_string': 'the beginning of the string',
+    'at_end_string': 'the end of the string',
+}
+
+# Debug setting. If true, print the parse tree as we parse it.
 debug = False
 
 ## Functions
@@ -141,6 +179,10 @@ def wrapped_list(lines):
         wrapper.initial_indent = " " * indent
         wrapper.subsequent_indent = " " * (indent + 5)
         yield from wrapper.wrap(stripped)
+        
+
+def check_for_quotes(string):
+    return re.sub(quotes_regex, '\2', string)
 
 # Functions for getting and formatting the parse tree.
 
@@ -190,7 +232,7 @@ def get_parse_tree(regex_string):
     
 # Translation functions.
     
-def repeat(lexemes, tree, delegate):
+def regex_repeat(lexemes, tree, delegate):
     start_grouping(tree)
     min, max = int(lexemes[1]), int(lexemes[2])
     greed = " (non-greedy)" if lexemes[0] == "min_repeat" else ""
@@ -222,8 +264,18 @@ def collect_literals(tree):
             break
         yield lexemes[1]
 
+
 def not_literal(lexemes, tree, delegate):
-    return "any character except " + literal(lexemes, tree, delegate)
+    char_literal = lexemes[1]
+    if char_literal in special_characters:
+        character = special_characters[char_literal]
+    elif char_literal in unusual_characters:
+        character = unusual_characters[char_literal]
+    else:
+        tiny_list = [char_literal,]
+        character = quoted_chars(tiny_list)[0]
+    return "any character except {0}".format(character)
+
 
 def literal(lexemes, tree, delegate):
     character = lexemes[1]
@@ -234,51 +286,33 @@ def literal(lexemes, tree, delegate):
         if character in unusual_characters:
             return unusual_characters[character]
         return "the character {0}".format(*quoted_chars(literals))
-    if delegate == 'set':
+    elif delegate == 'set':
         char_list = inline_list(quoted_chars(literals), ending_sep="or")
         return "a {0} character".format(char_list)
-    characters = quoted_chars(literals, concat=True)
-    return "the characters {0}".format(characters)
+    else:
+        characters = quoted_chars(literals, concat=True)
+        return "the characters {0}".format(characters)
 
 
 def regex_in(lexemes, tree, delegate):
     start_grouping(tree)
     modifier = next(tree)
     if modifier == 'negate None':
-        intro = "any character except "    
+        intro = "any character except "
     else:
         intro = ""
         tree.send(modifier)
-    set_items = translate(tree, delegate='set')
-    item_descs = list(set_items)
-    if len(item_descs) == 1:
-        if modifier == 'negate None' and item_descs[0] in categories.values():
-            item_descs[0] = category_antonyms[item_descs[0]]
-            intro = ""
-        return intro + item_descs[0]
+    set_items = list(translate(tree, delegate='set'))
+    if len(set_items) == 1:
+        item = set_items[0]
+        if modifier == 'negate None' and item in categories.values():
+            return category_complements[item]
+        else:
+            return intro + item
     else:
-        conjoined_descs = conjoined(item_descs, "or")
+        conjoined_descs = conjoined(set_items, "or")
         return bullet_list(conjoined_descs, intro + "one of the following")
-
-categories = {
-    'category_word': "any alphanumeric character or underscore",
-    'category_space': "any whitespace character",
-    'category_not_space': "any non-whitespace character",
-    'category_not_word': "any non-alphanumeric character",
-    'category_digit': "any digit",
-    'category_not_digit': "any non-digit character",
-}
-
-opposed_categories = {
-    'category_word': 'category_not_word',
-    'category_space': 'category_not_space',
-    'category_digit': 'category_not_digit',
-}
-
-category_antonyms = {categories[k]: categories[v] for k, v in
-                     opposed_categories.items()}
-category_antonyms.update({v: k for k, v in category_antonyms.items()})
-
+ 
  
 def category(lexemes, tree, delegate):
     cat_type = lexemes[1]
@@ -321,22 +355,18 @@ def regex_assert(lexemes, tree, delegate):
 def regex_branch(lexemes, tree, delegate):
     start_grouping(tree)
     branch = translate(tree)
+    branches = []
     first_branch = list(bullet_list(clean_up_syntax(branch), "either"))
-    if next(tree) != "or":
-        raise ValueError
-    start_grouping(tree)
-    branch = translate(tree)
-    second_branch = list(bullet_list(clean_up_syntax(branch), "or"))
-    return itertools.chain(first_branch, second_branch)
-
-locations = {
-    'at_beginning': 'the beginning of a line',
-    'at_end': 'the end of the line',
-    'at_boundary': 'the beginning or end of a word',
-    'at_non_boundary': '(if this is not the beginning or end of a word)',
-    'at_beginning_string': 'the beginning of the string',
-    'at_end_string': 'the end of the string',
-}
+    branches.append(first_branch)
+    for item in tree:
+        if item != "or":
+            tree.send(item)
+            break
+        start_grouping(tree)
+        branch = translate(tree)
+        new_branch = list(bullet_list(clean_up_syntax(branch), "or"))
+        branches.append(new_branch[:])
+    return itertools.chain(*branches)
 
     
 def regex_at(lexemes, tree, delegate):
@@ -365,7 +395,7 @@ def start_grouping(tree):
     '''
     if next(tree) != 'start_grouping 0':
         raise ValueError
-    return True
+    
     
 def unexpected_start_grouping(lexemes, tree, delegate):
     '''Handle 'start_grouping' by removing the following 'end_grouping'.
@@ -377,7 +407,8 @@ def unexpected_start_grouping(lexemes, tree, delegate):
     iterate into the tree to find and remove the 'end_grouping' element we know
     is there, then restore the other elements.
     '''
-    elements = list(itertools.takewhile(grouped, tree))
+    elements = list(itertools.takewhile(lambda line: line != 'end_grouping 0',
+                                        tree))
     for element in reversed(elements):
         tree.send(element)
     return "(warning, some elements may not appear correctly grouped)"
@@ -387,19 +418,19 @@ def end_grouping(lexemes, tree, delegate):
     '''Handle 'end_grouping' by raising a StopIteration exception.
     
     'end_grouping' is a fake element produced by get_parse_tree when we reach
-    the end of a subgroup of elements. Raise a fake StopIteration to tell the
-    subgroup iterator that its job is done.
-    '''    
+    the end of a subgroup of elements. Raise a fake StopIteration to shut down
+    the subgroup translator.
+    '''
     raise StopIteration
-    
-def grouped(line): return line != 'end_grouping 0'
     
 # The translation dictionary. Dispatch table between regex parser elements
 # and translation functions.
+# Because this dictionary contains all the regex functions, it has to come
+# after them, even though it's a constant. Sorry!
     
 translation = {
-    'max_repeat': repeat,
-    'min_repeat': repeat,
+    'max_repeat': regex_repeat,
+    'min_repeat': regex_repeat,
     'literal': literal,
     'not_literal': not_literal,
     'in': regex_in,
@@ -416,8 +447,19 @@ translation = {
     'range': regex_range,
 }
 
-
 def translate(tree, delegate=None):
+    '''Given a parse tree, yields the translation for each element.
+    
+    'translate' looks each element up in the translation dictionary and calls
+    the associated function to generate the appropriate translation. It expects
+    either a string or a iterable containing strings in return. 'translate' is
+    also used by some of the functions to translate the subgroups associated
+    with their elements.
+    
+    delegate: The function calling translate, which is passed to the functions
+    it calls. Used when output should be in a different format for a particular
+    type of subgroup.
+    '''
     for item in tree:
         lexemes = item.split()
         try:
@@ -429,20 +471,21 @@ def translate(tree, delegate=None):
             if isinstance(result, str):
                 yield result
             else:
-                yield from result
+                yield from result          
 
-def check_for_quotes(string):
-    if (string.startswith('"') and string.endswith('"')) or (
-        string.startswith('/') and string.endswith('/')) or (
-        string.startswith("'") and string.endswith("'")):
-        return string[1:-1]
-    return string
-
-quotes_regex = r'''^(["/']).*(["/'])$'''
-
-# The actual function!          
+# The functions that do the actual work!
 
 def speak(regex_string=None, clean_quotes=True):
+    '''Given a regular expression, prints the translation for that regular
+    expression.
+    
+    'speak' gets the parse tree for the regular expression, produces the list
+    of elements, runs it through a bunch of text-formatting functions, and
+    prints it out.
+    
+    clean_quotes: If true, checks if the given regular expression is enclosed
+    in quotation marks and removes them before translating it.
+    '''
     if regex_string is None:
         regex_string = input("Enter a regular expression:")
     if clean_quotes:
