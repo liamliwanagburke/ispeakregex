@@ -254,12 +254,12 @@ def get_parse_tree(regex_string):
 # Translation functions.
     
 def regex_repeat(lexemes, tree, delegate):
-    start_grouping(tree)
+    subset = start_grouping(tree)
     min, max = int(lexemes[1]), int(lexemes[2])
     greed = " (non-greedy)" if lexemes[0] == "min_repeat" else ""
     if min == max:
         if min == 1:
-            return next(translate(tree))
+            return next(subset)
         else:
             leadin = "{0} occurrences of".format(min)    
     elif max >= max_match:
@@ -272,8 +272,7 @@ def regex_repeat(lexemes, tree, delegate):
     else:
         leadin = "between {0} and {1}{2} occurrences of".format(min, max,
                                                                 greed)
-    subset = clean_up_syntax(translate(tree))
-    return bullet_list(subset, leadin)
+    return bullet_list(clean_up_syntax(subset), leadin)
 
 
 @polite
@@ -317,20 +316,20 @@ def regex_literal(lexemes, tree, delegate):
 
 
 def regex_in(lexemes, tree, delegate):
-    start_grouping(tree)
-    modifier = next(tree)
-    if modifier == 'negate None':
+    set_items = start_grouping(tree, delegate='set')
+    if next(set_items) == 'negate None':
+        complement = True
         intro = "any character except "
     else:
+        complement = False
         intro = ""
-        tree.send(modifier)
-    set_items = translate(tree, delegate='set')
+        set_items.prev()
     if not set_items.at_least(2):
         item = set_items[0]
-        if modifier == 'negate None' and item in categories.values():
+        if complement and item in categories.values():
             return category_complements[item]
         else:
-            return intro + item
+            return concat(intro + item)
     else:
         conjoined_descs = conjoined(set_items, "or")
         return bullet_list(conjoined_descs, intro + "one of the following")
@@ -343,7 +342,7 @@ def regex_category(lexemes, tree, delegate):
 
 
 def regex_subpattern(lexemes, tree, delegate):
-    start_grouping(tree)
+    subpattern = start_grouping(tree)
     pattern_name = lexemes[1]
     if pattern_name == 'None':
         next_element = next(tree)
@@ -351,12 +350,11 @@ def regex_subpattern(lexemes, tree, delegate):
         if next_lexemes[0] == 'groupref_exists':
             return regex_groupref_exists(next_lexemes, tree, delegate)
         else:
-            tree.send(next_element)
+            tree.prev()
             subpattern_intro = "a non-captured subgroup consisting of"
     else:
         subpattern_intro = "subgroup #{0}, consisting of".format(pattern_name)
-    subpattern = clean_up_syntax(translate(tree))
-    return bullet_list(subpattern, subpattern_intro)
+    return bullet_list(clean_up_syntax(subpattern), subpattern_intro)
 
 
 def regex_groupref(lexemes, tree, delegate):
@@ -369,22 +367,20 @@ def regex_any(lexemes, tree, delegate):
 
 
 def regex_assert(lexemes, tree, delegate):
-    start_grouping(tree)
+    asserted = start_grouping(tree)
     positive = lexemes[0] == 'assert'
     lookahead = lexemes[1] == '1'
     direction = ("we could {0}now match" if lookahead else
                  "we could {0}have just matched")
     positivity = "" if positive else "not "
     assertion = "(if " + direction.format(positivity)
-    asserted = clean_up_syntax(translate(tree))
-    return bullet_list(asserted, assertion, ending=")")
+    return bullet_list(clean_up_syntax(asserted), assertion, ending=")")
 
 
 def regex_branch(lexemes, tree, delegate):
     leadin = 'either'
     while True:
-        start_grouping(tree)
-        branch = translate(tree)
+        branch = start_grouping(tree)
         yield from bullet_list(clean_up_syntax(branch), leadin, collapse=False)
         if next(tree) != "or":
             tree.prev()
@@ -414,11 +410,11 @@ def regex_groupref_exists(lexemes, tree, delegate):
     The parse tree produced by the compiler forgets to include the branch
     marker between the true and false patterns, so they get run together.
     '''
-    start_grouping(tree)
+    conditional_group = start_grouping(tree)
     group_name = lexemes[1]
-    conditional_group = clean_up_syntax(translate(tree))
     condition = "the subgroup (only if group #{0} was found earlier)"
-    return bullet_list(conditional_group, condition.format(group_name))
+    return bullet_list(clean_up_syntax(conditional_group),
+                       condition.format(group_name))
 
 
 def regex_range(lexemes, tree, delegate):
@@ -430,7 +426,7 @@ def regex_range(lexemes, tree, delegate):
     
 # Some fake 'translation' functions to help iterate over the flattened tree.
 
-def start_grouping(tree):
+def start_grouping(tree, delegate=None):
     '''Verify that the next element is a 'start_grouping' element and remove
     it.
     
@@ -441,6 +437,7 @@ def start_grouping(tree):
     '''
     if next(tree) != 'start_grouping 0':
         raise ValueError
+    return translate(tree, delegate)
     
     
 def unexpected_start_grouping(lexemes, tree, delegate):
@@ -453,10 +450,13 @@ def unexpected_start_grouping(lexemes, tree, delegate):
     iterate into the tree to find and remove the 'end_grouping' element we know
     is there, then restore the other elements.
     '''
-    elements = list(itertools.takewhile(lambda line: line != 'end_grouping 0',
-                                        tree))
-    for element in reversed(elements):
-        tree.send(element)
+    elements = []
+    for item in tree:
+        if item == 'end_grouping 0':
+            break
+        else:
+            elements.append(item)
+    tree.send(*elements)
     return "(warning, some elements may not appear correctly grouped)"
 
     

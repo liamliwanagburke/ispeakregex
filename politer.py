@@ -71,12 +71,12 @@ class Politer(collections.Iterator, collections.Sequence):
         
     def send(self, *values):
         '''Puts values 'on top' of the politer, last-in-first-out.'''
-        self._values.extendleft(reversed(values))      
+        self._values.extendleft(values)      
         
     def prev(self):
         '''Rewinds the generator exactly one value. Not repeatable.'''
         if self._previous is None:
-            raise StopIteration
+            raise StopIteration('politer.prev() is not repeatable')
         self._values.appendleft(self._previous)
         self._previous = None
     
