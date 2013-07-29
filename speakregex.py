@@ -4,7 +4,7 @@ import sys
 import textwrap
 import itertools
 import functools
-import politer
+from politer import polite
 
 ## Constants
 
@@ -86,16 +86,13 @@ debug = False
 # Text-handling functions.
 
 def line_and_indent(line):
-    '''Dedents a line, returns it with the amount of previous indentation.
-    '''
+    '''Dedents a line, returns it with the amount of indentation.'''
     stripped_line = line.lstrip()
     return stripped_line, len(line) - len(stripped_line)
 
 
 def is_bulleted(line):
-    '''True if the line begins with a bullet preceded by any amount of
-    indentation.
-    '''
+    '''True if the line, minus whitespace, begins with a bullet.'''
     return line.lstrip().startswith("*")
 
 
@@ -104,8 +101,7 @@ def quoted(string):
 
 
 def concat(*args):
-    '''Concatenates its arguments. Quick wrapper for ''.join.
-    '''
+    '''Concatenates its arguments. Quick wrapper for ''.join.'''
     return ''.join(args)
 
 
@@ -121,10 +117,10 @@ def lookup_char(text_ordinal, checkdicts=True, longform=True):
         return "the character {0}".format(quoted(char))
     
 
-def quoted_chars(ordinals, concat=False):
+def quoted_chars(ordinals, concatenate=False):
     chars = (lookup_char(ord, checkdicts=False, longform=False) for ord in
             ordinals)
-    if not concat:
+    if not concatenate:
         return [quoted(char) for char in chars]
     else:
         return quoted(concat(*chars))
@@ -207,15 +203,15 @@ def check_for_quotes(string):
 @functools.lru_cache()
 def parse_regex(regex_string):
     '''Returns the parse tree for a regular expression, as a string.
-    
-    Rather than reinvent the wheel, 'parse_regex' just compiles the regex you
-    pass it with the debug flag set and temporarily redirects stdout to catch
-    the debug info.
-    
-    Because the regex compiler has a cache, if you attempt to compile the same
-    regular expression repeatedly, you won't get the debug info. To avoid this
-    problem, we purge the cache every time, and keep a cache for 'parse_regex'
-    instead.
+
+    Rather than reinvent the wheel, 'parse_regex' just compiles the regex
+    you pass it with the debug flag set and temporarily redirects stdout to
+    catch the debug info.
+
+    Because the regex compiler has a cache, if you attempt to compile the
+    same regular expression repeatedly, you won't get the debug info. To
+    avoid this problem, we purge the cache every time, and keep a cache for
+    'parse_regex' instead.
     '''
     re.purge()
     catch_debug_info = io.StringIO()
@@ -226,7 +222,7 @@ def parse_regex(regex_string):
     return catch_debug_info.getvalue()
     
 
-@politer.polite
+@polite
 def get_parse_tree(regex_string):
     '''Yields the parse tree for a regular expression, element by element.
     
@@ -314,7 +310,7 @@ def regex_literal(lexemes, tree, delegate):
         char_list = inline_list(quoted_chars(literals), ending_sep="or")
         return "a {0} character".format(char_list)
     else:
-        characters = quoted_chars(literals, concat=True)
+        characters = quoted_chars(literals, concatenate=True)
         return "the characters {0}".format(characters)
 
 
@@ -503,6 +499,8 @@ translation = {
     'groupref_exists': regex_groupref_exists,
 }
 
+
+@polite
 def translate(tree, delegate=None):
     '''Given a parse tree, yields the translation for each element.
     
