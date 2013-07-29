@@ -4,7 +4,7 @@ import sys
 import textwrap
 import itertools
 import functools
-from politer import polite
+from politer import polite, Politer
 
 ## Constants
 
@@ -84,6 +84,7 @@ debug = False
 ## Functions
 
 # Text-handling functions.
+    
 
 def line_and_indent(line):
     '''Dedents a line, returns it with the amount of indentation.'''
@@ -125,45 +126,46 @@ def quoted_chars(ordinals, concatenate=False):
     else:
         return quoted(concat(*chars))
 
-    
+
 def inline_list(items, internal_sep="", ending_sep=""):
     if internal_sep:
         internal_sep += " "
     separator = ", {0}".format(internal_sep)
     if ending_sep:
-        items = list(conjoined(items, ending_sep))
-    if len(items) > 2:
+        items = conjoined(items, ending_sep)
+    if items.at_least(3):
         return separator.join(items)
     return " ".join(items)
 
 
+@polite
 def conjoined(items, conjunction):
-    item_list = list(items)
-    if len(item_list) < 3:
-        first_item, last_item = item_list[0], item_list[1]
-        yield "{0} {1} {2}".format(first_item, conjunction, last_item)
+    items = Politer(items)
+    if not items.at_least(3):
+        item_bits = [items[0], conjunction, items[1]]
+        yield ' '.join(item_bits)
     else:
-        last_item = conjunction + " " + item_list.pop()
-        yield from item_list
-        yield last_item
-    
+        yield from items.popped()
+        yield concat(conjunction, " ", items[0])
 
+    
+@polite
 def bullet_list(lines, intro="", ending="", collapse=True):
-    lines = list(lines)
-    if collapse and len(lines) == 1:
-        intro = intro + " " if intro else ""
-        yield intro + lines[0] + ending
+    if collapse and not lines.at_least(2):
+        intro = concat(intro, " ") if intro else ""
+        yield concat(intro, lines[0], ending)
     else:
-        last_line = lines.pop()
         if intro:
             yield intro + ":"
-        for line in lines:
+        for line in lines.popped():
             leader = "  " if is_bulleted(line) else " * "
-            yield leader + line
+            yield concat(leader, line)
+        last_line = lines[0]
         leader = "  " if is_bulleted(last_line) else " * "
-        yield leader + last_line + ending
+        yield concat(leader, last_line, ending)
 
 
+@polite
 def clean_up_syntax(lines):
     line = next(lines)
     yield line
@@ -176,16 +178,16 @@ def clean_up_syntax(lines):
         prev_line = line
 
 
+@polite
 def punctuate(lines):
-    lines = list(lines)
-    last_line = lines.pop() + "."
-    for line in lines:
+    for line in lines.popped():
         if not line.endswith((":", ")")):
-            line = line + ","
+            line = concat(line, ",")
         yield line
-    yield last_line
+    yield concat(lines[0], ".")
+    
 
-
+@polite
 def wrapped_list(lines):
     wrapper = textwrap.TextWrapper()
     for line in lines:
@@ -274,6 +276,7 @@ def regex_repeat(lexemes, tree, delegate):
     return bullet_list(subset, leadin)
 
 
+@polite
 def collect_literals(tree):
     for item in tree:
         lexemes = item.split()
@@ -295,8 +298,7 @@ def regex_not_literal(lexemes, tree, delegate):
     '''
     fake_elements = ['start_grouping 0', 'negate None',
                      'literal ' + lexemes[1], 'end_grouping 0']
-    for element in reversed(fake_elements):
-        tree.send(element)
+    tree.send(*fake_elements)
     return regex_in(['in'], tree, delegate)
 
 
@@ -322,8 +324,8 @@ def regex_in(lexemes, tree, delegate):
     else:
         intro = ""
         tree.send(modifier)
-    set_items = list(translate(tree, delegate='set'))
-    if len(set_items) == 1:
+    set_items = translate(tree, delegate='set')
+    if not set_items.at_least(2):
         item = set_items[0]
         if modifier == 'negate None' and item in categories.values():
             return category_complements[item]
@@ -336,7 +338,7 @@ def regex_in(lexemes, tree, delegate):
  
 def regex_category(lexemes, tree, delegate):
     cat_type = lexemes[1]
-    no_such_category = "an unknown category: {0}".format(cat_type)
+    no_such_category = concat("an unknown category: ", cat_type)
     return categories.get(cat_type, no_such_category)
 
 
@@ -379,23 +381,16 @@ def regex_assert(lexemes, tree, delegate):
 
 
 def regex_branch(lexemes, tree, delegate):
-    start_grouping(tree)
-    branch = translate(tree)
-    branches = []
-    first_branch = list(bullet_list(clean_up_syntax(branch), "either",
-                        collapse=False))
-    branches.append(first_branch)
-    for item in tree:
-        if item != "or":
-            tree.send(item)
-            break
+    leadin = 'either'
+    while True:
         start_grouping(tree)
         branch = translate(tree)
-        new_branch = list(bullet_list(clean_up_syntax(branch), "or",
-                          collapse=False))
-        branches.append(new_branch[:])
-    return itertools.chain(*branches)
-
+        yield from bullet_list(clean_up_syntax(branch), leadin, collapse=False)
+        if next(tree) != "or":
+            tree.prev()
+            break
+        leadin = 'or'
+    
     
 def regex_at(lexemes, tree, delegate):
     location = lexemes[1]

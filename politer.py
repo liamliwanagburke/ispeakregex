@@ -39,10 +39,9 @@ class Politer(collections.Iterator, collections.Sequence):
     2) It provides a 'lazy' implementation of the sequence protocol,
     allowing you to get the politer's length, index into it, etc. just like
     a list. The politer will internally unroll as much of the generator as
-    necessary in order to perform the requested operation. Since checking
-    the length of the politer requires unrolling the entire generator, it
-    also provides a method, at_least(n), which lazily evaluates the
-    condition 'len(politer) >= n'.
+    necessary in order to perform the requested operation. It also provides
+    some 'lazy' methods to avoid using the more exhaustive ones, such as
+    at_least() and popped().
 
     Note that pulling values off the politer using next() will change its
     length and the indices of the contained elements -- the politer is a
@@ -91,11 +90,15 @@ class Politer(collections.Iterator, collections.Sequence):
         return len(self._values)
     
     def __getitem__(self, index):
-        '''Gets the value at a specific index, or gets a slice.'''
+        '''Gets the value at a specific index, or gets a slice.
+        
+        Since deques can't be sliced, if a slice is requested we cast the
+        internal deque to a list and slice that, with the attendant
+        costs.'''
         if isinstance(index, slice):
             return self._getslice(index)
         elif isinstance(index, int):
-            if not self._advance_until(lambda: len(self._values) >= index):
+            if not self._advance_until(lambda: len(self._values) > index):
                 raise IndexError("politer index out of range")
             return self._values[index]
         else:
@@ -126,15 +129,34 @@ class Politer(collections.Iterator, collections.Sequence):
         
     def close(self):
         '''Closes the generator and discards all values.'''
-        self.generator.close()
+        self._generator.close()
         del self._values
         self._values = collections.deque()
         
+    def pop(self):
+        '''Dumps the generator, then removes and returns the last item.'''
+        self._dump()
+        return self._values.pop()
+        
+    def popped(self):
+        '''Yields every item in the politer except the last one.'''
+        item = next(self)
+        while self:
+            yield item
+            item = next(self)
+        self.prev()    
+        
+    def __nonzero__(self):
+        '''Returns True if there are any remaining values.'''
+        return self._advance_until(lambda: self._values)
+    
     def _getslice(self, sliceobj):
-        if sliceobj.start < 0 or sliceobj.stop < 0: # negative slicing requires
-            self._dump()                            # unrolling the generator
+        start = sliceobj.start if sliceobj.start is not None else 0
+        stop = sliceobj.stop if sliceobj.stop is not None else -1 # force dump
+        if start < 0 or stop < 0:                 
+            self._dump()                           
         else:
-            self._advance_until(lambda: len(self._values) >= sliceobj.stop)
+            self._advance_until(lambda: len(self._values) >= stop)
         return list(self._values)[sliceobj]
         
     def _advance(self):
