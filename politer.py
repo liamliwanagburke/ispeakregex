@@ -10,6 +10,9 @@ import functools
 import collections
 
 def politer(iterable):
+    '''Wraps an iterable in a Politer if it is not already wrapped.'''
+    if isinstance(iterable, Politer):
+        return iterable
     return Politer(iterable)
 
 def polite(func):
@@ -18,7 +21,7 @@ def polite(func):
     '''
     @functools.wraps(func)
     def wrapped(*args, **kwargs):
-        return Politer(func(*args, **kwargs))
+        return politer(func(*args, **kwargs))
     return wrapped
     
 class Politer(collections.Iterator, collections.Sequence):
