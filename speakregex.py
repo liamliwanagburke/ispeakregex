@@ -4,7 +4,7 @@ import sys
 import textwrap
 import itertools
 import functools
-from politer import polite, Politer
+from politer import *
 
 ## Constants
 
@@ -85,6 +85,8 @@ debug = False
 
 # Text-handling functions.
     
+def check_for_quotes(string):
+    return re.sub(quotes_regex, '\2', string)
 
 def line_and_indent(line):
     '''Dedents a line, returns it with the amount of indentation.'''
@@ -98,12 +100,19 @@ def is_bulleted(line):
 
 
 def quoted(string):
-    return concat('"', string, '"') 
+    return concat('"', string, '"')
 
 
 def concat(*args):
     '''Concatenates its arguments. Quick wrapper for ''.join.'''
     return ''.join(args)
+    
+    
+def concat_if(*args):
+    if not args[0]:
+        return ''
+    else:
+        return ''.join(args)
 
 
 def lookup_char(text_ordinal, checkdicts=True, longform=True):
@@ -125,80 +134,127 @@ def quoted_chars(ordinals, concatenate=False):
         return [quoted(char) for char in chars]
     else:
         return quoted(concat(*chars))
-
-
-def inline_list(items, internal_sep="", ending_sep=""):
-    if internal_sep:
-        internal_sep += " "
-    separator = ", {0}".format(internal_sep)
-    if ending_sep:
-        items = conjoined(items, ending_sep)
-    if items.at_least(3):
-        return separator.join(items)
-    return " ".join(items)
-
-
-@polite
-def conjoined(items, conjunction):
-    items = Politer(items)
-    if not items.at_least(3):
-        item_bits = [items[0], conjunction, items[1]]
-        yield ' '.join(item_bits)
-    else:
-        yield from items.popped()
-        yield concat(conjunction, " ", items[0])
-
-    
-@polite
-def bullet_list(lines, intro="", ending="", collapse=True):
-    if collapse and not lines.at_least(2):
-        intro = concat(intro, " ") if intro else ""
-        yield concat(intro, lines[0], ending)
-    else:
-        if intro:
-            yield intro + ":"
-        for line in lines.popped():
-            leader = "  " if is_bulleted(line) else " * "
-            yield concat(leader, line)
-        last_line = lines[0]
-        leader = "  " if is_bulleted(last_line) else " * "
-        yield concat(leader, last_line, ending)
-
-
-@polite
-def clean_up_syntax(lines):
-    line = next(lines)
-    yield line
-    prev_line = line
-    for line in lines:
-        if not (is_bulleted(line) or line.startswith("(") or
-                prev_line.endswith(")") or line == "or:"):
-            line = "followed by " + line
-        yield line
-        prev_line = line
-
-
-@polite
-def punctuate(lines):
-    for line in lines.popped():
-        if not line.endswith((":", ")")):
-            line = concat(line, ",")
-        yield line
-    yield concat(lines[0], ".")
-    
-
-@polite
-def wrapped_list(lines):
-    wrapper = textwrap.TextWrapper()
-    for line in lines:
-        stripped, indent = line_and_indent(line)
-        wrapper.initial_indent = " " * indent
-        wrapper.subsequent_indent = " " * (indent + 5)
-        yield from wrapper.wrap(stripped)
         
 
-def check_for_quotes(string):
-    return re.sub(quotes_regex, '\2', string)
+class TextList(collections.Iterator):
+    def __init__(self, iterable, intro="", outro="", subord="", coord=""):
+        '''Instantiates a TextList object.
+        
+        iterable: a stream of strings to list.
+        intro: text that should head the list.
+        outro: text that should immediately follow the list.
+        subord: subordinating conjunction, used to join items in the list.
+        coord: coordinating conjunction, used to connect the last item in
+        the list to the rest of the list.
+        '''
+        self._data = politer(iterable)
+        self._list = self._make_list(self._data)
+        self.intro = intro
+        self.outro = outro
+        self.subord = concat_if(subord, " ")
+        self.coord = concat_if(coord, " ")
+        self._wrapper = textwrap.TextWrapper()
+        self.indent = 0
+    
+    def __next__(self):
+        return next(self._list)
+    
+    @property
+    def indent(self):
+        '''The base indent for each item of the list.'''
+        return len(self._wrapper.initial_indent)
+        
+    @indent.setter
+    def indent(self, value):
+        self._wrapper.initial_indent = " " * value
+        self._wrapper.subsequent_indent = " " * (value + 5)
+    
+    def _clean(self, *args):
+        line = ''.join(args)
+        return self._wrapper.wrap(line)
+    
+    def collapsible(self):
+        '''Check if a TextList is collapsible into a single string.
+        
+        A TextList is collapsible if:
+        * it contains only one item,
+        * and that item is either a string or itself collapsible.
+        '''
+        if not self._data.at_least(1):
+            return True
+        elif isinstance(self._data[0], TextList):
+            return self._data[0].collapsible()
+        else:
+            return not self._data.at_least(2)
+    
+    def collapse(self):
+        '''Collapse a TextList into a single string.
+        
+        This has bad results if called on an uncollapsible TextList. 
+        '''
+        try:
+            item = self._data[0]
+        except IndexError:
+            return ""
+        if isinstance(item, TextList): # must be collapsible
+            item = item.collapse()
+        self.intro = concat_if(self.intro, " ")
+        return concat(self.intro, item, self.outro)
+            
+    def _bullet(self, item, prefix="", suffix=""):
+        if isinstance(item, TextList):
+            if not item.collapsible():
+                item.intro = concat("* ", prefix, item.intro)
+                item.outro = concat(item.outro, suffix)
+                item.indent = self.indent
+                yield from item
+                return
+            else:
+                item = item.collapse()
+        yield from self._clean("* ", prefix, item, suffix)
+          
+    def _make_list(self, items):
+        if self.collapsible():
+            yield self.collapse()
+            return     # once I collapse, I'm done
+        if self.intro:
+            yield from self._clean(self.intro, ":")
+        self.indent += 2
+        if not self._data.at_least(2):
+            yield from self._bullet(self._data[0], suffix=self.outro)
+            return
+        item = next(self._data)
+        yield from self._bullet(item, suffix=",")
+        for item in self._data.popped():
+            yield from self._bullet(item, prefix=self.subord, suffix=",")
+        item = self._data.pop()
+        prefix = self.coord if self.coord else self.subord
+        yield from self._bullet(item, prefix=prefix, suffix=self.outro)
+        
+    def __str__(self):
+        '''Output the list as a string.'''
+        if self.collapsible():
+            output = self._clean(self.collapse())
+        else:
+            output = self
+        return '\n'.join(output)
+
+
+class InlineList(TextList):
+    def collapsible(self):
+        return True
+    
+    def collapse(self):
+        self.intro = concat_if(self.intro, " ")
+        if not self._data.at_least(2):
+            return concat(self.intro, self._data[0], self.outro)
+        elif not self._data.at_least(3):
+            return concat(self.intro, self._data[0], ' ',
+                          self.coord, self._data[1], self.outro)
+        else:
+            return concat(self.intro, ', '.join(self._data.popped()), ' ',
+                          self.coord, self._data.pop(), self.outro)
+            
 
 # Functions for getting and formatting the parse tree.
 
@@ -272,7 +328,7 @@ def regex_repeat(lexemes, tree, delegate):
     else:
         leadin = "between {0} and {1}{2} occurrences of".format(min, max,
                                                                 greed)
-    return bullet_list(clean_up_syntax(subset), leadin)
+    return TextList(subset, leadin)
 
 
 @polite
@@ -295,8 +351,8 @@ def regex_not_literal(lexemes, tree, delegate):
     set complements, we manually un-optimize the parse tree and then route the
     translation to the 'regex_in' function.
     '''
-    fake_elements = ['start_grouping 0', 'negate None',
-                     'literal ' + lexemes[1], 'end_grouping 0']
+    fake_elements = ['end_grouping 0', concat('literal ', lexemes[1]),
+                     'negate None', 'start_grouping 0']
     tree.send(*fake_elements)
     return regex_in(['in'], tree, delegate)
 
@@ -308,7 +364,7 @@ def regex_literal(lexemes, tree, delegate):
     if len(literals) == 1:
         return lookup_char(literals[0])
     elif delegate == 'set':
-        char_list = inline_list(quoted_chars(literals), ending_sep="or")
+        char_list = InlineList(quoted_chars(literals), coord="or")
         return "a {0} character".format(char_list)
     else:
         characters = quoted_chars(literals, concatenate=True)
@@ -317,22 +373,22 @@ def regex_literal(lexemes, tree, delegate):
 
 def regex_in(lexemes, tree, delegate):
     set_items = start_grouping(tree, delegate='set')
-    if next(set_items) == 'negate None':
+    if next(tree) == 'negate None':
         complement = True
         intro = "any character except "
     else:
         complement = False
         intro = ""
-        set_items.prev()
+        tree.prev()
     if not set_items.at_least(2):
         item = set_items[0]
         if complement and item in categories.values():
             return category_complements[item]
         else:
-            return concat(intro + item)
+            return concat(intro, item)
     else:
-        conjoined_descs = conjoined(set_items, "or")
-        return bullet_list(conjoined_descs, intro + "one of the following")
+        intro = concat(intro, "one of the following")
+        return TextList(set_items, intro, coord="or")
  
  
 def regex_category(lexemes, tree, delegate):
@@ -354,7 +410,7 @@ def regex_subpattern(lexemes, tree, delegate):
             subpattern_intro = "a non-captured subgroup consisting of"
     else:
         subpattern_intro = "subgroup #{0}, consisting of".format(pattern_name)
-    return bullet_list(clean_up_syntax(subpattern), subpattern_intro)
+    return TextList(subpattern, subpattern_intro)
 
 
 def regex_groupref(lexemes, tree, delegate):
@@ -374,18 +430,13 @@ def regex_assert(lexemes, tree, delegate):
                  "we could {0}have just matched")
     positivity = "" if positive else "not "
     assertion = "(if " + direction.format(positivity)
-    return bullet_list(clean_up_syntax(asserted), assertion, ending=")")
+    return TextList(asserted, assertion, ")")
 
 
 def regex_branch(lexemes, tree, delegate):
-    leadin = 'either'
-    while True:
-        branch = start_grouping(tree)
-        yield from bullet_list(clean_up_syntax(branch), leadin, collapse=False)
-        if next(tree) != "or":
-            tree.prev()
-            break
-        leadin = 'or'
+    leadin = 'either' if lexemes[0] == 'branch' else 'or'
+    branch = start_grouping(tree)
+    return TextList(branch, intro=leadin)
     
     
 def regex_at(lexemes, tree, delegate):
@@ -413,8 +464,7 @@ def regex_groupref_exists(lexemes, tree, delegate):
     conditional_group = start_grouping(tree)
     group_name = lexemes[1]
     condition = "the subgroup (only if group #{0} was found earlier)"
-    return bullet_list(clean_up_syntax(conditional_group),
-                       condition.format(group_name))
+    return TextList(conditional_group, intro=condition.format(group_name))
 
 
 def regex_range(lexemes, tree, delegate):
@@ -490,6 +540,7 @@ translation = {
     'assert_not': regex_assert,
     'at': regex_at,
     'branch': regex_branch,
+    'or': regex_branch,
     'range': regex_range,
     'groupref_exists': regex_groupref_exists,
 }
@@ -513,14 +564,11 @@ def translate(tree, delegate=None):
         lexemes = item.split()
         try:
             dispatch = translation[lexemes[0]]
+            print(dispatch)
         except KeyError:
             yield "something I don't understand: {0}".format(item)
         else:
-            result = dispatch(lexemes, tree, delegate)
-            if isinstance(result, str):
-                yield result
-            else:
-                yield from result          
+            yield dispatch(lexemes, tree, delegate)
 
 # The functions that do the actual work!
 
@@ -541,13 +589,10 @@ def speak(regex_string=None, clean_quotes=True):
         regex_string = check_for_quotes(regex_string)
     tree = get_parse_tree(regex_string)
     translation = translate(tree)
-    syntax_pass = clean_up_syntax(translation)
-    punctuation_pass = punctuate(syntax_pass)
     speech_intro = "This regular expression will match"
-    bulleted_translation = bullet_list(punctuation_pass, speech_intro)
-    final_translation = wrapped_list(bulleted_translation)
+    output = TextList(translation, speech_intro, ".", "followed by")
     try:
-        print("\n".join(final_translation))
+        print(output)
     except re.error as err:
         sys.stdout = sys.__stdout__
         print("Unfortunately, your regular expression is not valid, because it"
