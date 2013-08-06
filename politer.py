@@ -7,6 +7,7 @@ exported:
 '''
 
 import functools
+import itertools
 import collections
 
 def politer(iterable):
@@ -57,14 +58,17 @@ class Politer(collections.Iterator, collections.Sequence):
     target the 'far end' of the generator, you will probably do better just
     casting the generator to a list.
     '''
+    
+    __slots__ = ['_generator', '_values', '_previous']
+    
     def __init__(self, iterable):
         '''Instantiates a Politer. 'iterable' is the object to wrap.'''
         self._generator = iter(iterable)
         self._values = collections.deque()
         self._previous = None
-        
+    
     def __next__(self):
-        '''Gets the next value from the politer, or raises StopIteration.'''
+        '''Gets the next value from the politer.'''
         if self._values:
             value = self._values.popleft()
         else:
@@ -141,18 +145,28 @@ class Politer(collections.Iterator, collections.Sequence):
         self._dump()
         return self._values.pop()
         
-    def popped(self):
-        '''Yields every item in the politer except the last one.'''
-        item = next(self)
-        while self:
-            yield item
-            item = next(self)
-        self.prev()    
+    def popped(self, n=1):
+        '''Yields every item in the politer except the last n.'''
+        yield from self.takewhile(lambda _: self.at_least(n))
         
     def __nonzero__(self):
         '''Returns True if there are any remaining values.'''
         return self._advance_until(lambda: self._values)
+        
+    def takewhile(self, func):
+        '''As itertools, but preserves the failing element.'''
+        saved = None
+        for item in itertools.takewhile(func, self):
+            yield item
+            saved = item
+        self.prev()
+        if saved is not None:
+            self._previous = saved
     
+    def takeuntil(self, func):
+        '''Opposite of takewhile.'''
+        yield from self.takewhile(lambda x: not func(x))
+        
     def _getslice(self, sliceobj):
         start = sliceobj.start if sliceobj.start is not None else 0
         stop = sliceobj.stop if sliceobj.stop is not None else -1 # force dump
