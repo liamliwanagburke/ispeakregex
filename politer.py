@@ -9,12 +9,15 @@ exported:
 import functools
 import itertools
 import collections
+import inspect
+
 
 def politer(iterable):
     '''Wraps an iterable in a Politer if it is not already wrapped.'''
     if isinstance(iterable, Politer):
         return iterable
     return Politer(iterable)
+
 
 def polite(func):
     '''Decorator function that wraps a generator function and makes it
@@ -24,7 +27,22 @@ def polite(func):
     def wrapped(*args, **kwargs):
         return politer(func(*args, **kwargs))
     return wrapped
-    
+
+
+def polite_arg(argument):
+    '''Decorator function that wraps an argument passed to the function.'''
+    def make_polite(func):
+        signature = inspect.signature(func)
+        @functools.wraps(func)
+        def wrapped(*args, **kwargs):
+            bound = signature.bind(*args, **kwargs)
+            bound.arguments[argument] = politer(bound.arguments[argument])
+            return func(*bound.args, **bound.kwargs)
+        return wrapped
+    return make_polite
+        
+
+
 class Politer(collections.Iterator, collections.Sequence):
     '''
     A 'polite' iterator object which provides many useful methods.
@@ -159,14 +177,28 @@ class Politer(collections.Iterator, collections.Sequence):
         for item in itertools.takewhile(func, self):
             yield item
             saved = item
-        self.prev()
-        if saved is not None:
-            self._previous = saved
+        if not func(self._previous):
+            self.prev()
+            if saved is not None:
+                self._previous = saved
     
     def takeuntil(self, func):
         '''Opposite of takewhile.'''
         yield from self.takewhile(lambda x: not func(x))
         
+    def any(self, func):
+        '''True if func(any contained item) is true.'''
+        if any(filter(func, self._values)):
+            return True
+        elif not self._advance():
+            return False
+        else:
+            return self._advance_until(lambda: func(self._values[-1]))
+            
+    def all(self, func):
+        '''True if func(item) is true for all contained items.'''
+        return not self.any(lambda x: not func(x))
+             
     def _getslice(self, sliceobj):
         start = sliceobj.start if sliceobj.start is not None else 0
         stop = sliceobj.stop if sliceobj.stop is not None else -1 # force dump
