@@ -1,115 +1,225 @@
-"""Provides "polite" iterators that can receive and return values.
+'''Provides a 'polite' iterator object which can be sent back values and which
+allows sequence operations to be performed on it.
 
-Politer provides an iterator over an object that is "polite" - if you pass it
-any number of values, it will accept them and place them on top of the iterator
-stack, returning them before continuing to iterate.
+exported:
+    Politer -- the eponymous generator/sequence class
+    @polite -- decorator that makes a generator function return a Politer
+'''
 
-When iterating over streams or generators, one common use case is to accept and
-act on values until they fail to meet a certain condition. For example, given
-two large sorted files, you might want to print all lines that appear in both
-files. Since the files are very large, you would like to avoid reading them
-into memory. Since they are sorted, the simplest way is to take a line from one
-file and iterate through the next file until you find a line that would come
-after it:
+import functools
+import itertools
+import collections
+import inspect
 
-def broken_match_lines(file1, file2):
-	for line1 in file1:
-		for line2 in file2:
-			if line2 > line1:
-				break
-			elif line2 == line1:
-				print(line1)
-
-However, this code is faulty, because the value that fails the condition
-is lost.
-
-file1 = ["0", "1", "2 -- this line fails to match", "4"]
-file2 = ["0", "2 -- this line fails to match"]
-print(broken_match_lines(file1, file2))
-
-(Note that itertools.takewhile has this problem.)
-
-One solution is to save the most recent value and add it manually to the
-iteration. However, this is confusing to implement and to read:
-
-def messy_match_lines(file1, file2):
-	last_line = ""
-	for line1 in file1:
-		if last_line > line1:
-			break
-		elif last_line == line1:
-			print(line1)
-		else:
-			for line2 in file2:
-				if line2 > line1:
-					last_line = line2
-					break
-				elif line2 == line1:
-					print(line1)
-
-def also_messy_match_lines(file1, file2):
-	last_line = ""
-	for line1 in file1:
-		for line2 in itertools.chain([last_line], file2):
-			if line2 > line1:
-				last_line = line2
-				break
-			elif line2 == line1:
-				print(line1)
-
-In some cases, such as when multiple functions are iterating over the same
-stream, it may be extremely complex or impossible to use this strategy.
-
-Ideally, you would simply tell the iterator to take the line back, and it would
-"politely" do so, putting it back on top of the iterator 'stack' and yielding
-it again to the next request. This module provides a generator function that
-wraps an iterator and gives it this capability, making it a polite iterator, or
-"politer":
-
-def polite_match_lines(file1, file2):
-	politefile = politer(file2)
-	for line1 in file1:
-		for line2 in politefile:
-			if line2 > line1:
-				politefile.send(line2)
-				break
-			elif line2 == line1:
-				print(line1)
-
-The generator object returned by politer() can be passed seamlessly between
-functions just as if it were the original stream, even if you are putting
-values back or even putting new values on top of the stack. No special
-state-maintenance code is required.
-
-Functions exported:
-	politer(iterable): takes an iterable, returns a "polite" one
-	@polite: decorator function that makes a generator function "polite"
-"""
-
-from functools import wraps
 
 def politer(iterable):
-    '''Passed an iterable object, returns a 'polite' iterator, which stores
-    values you send to it and puts them on 'top' of the iterator, returning
-    them first before continuing.
-    '''
-    iterable = iter(iterable)
-    values = []
-    while True:
-        if values:
-            value = (yield values.pop())
-        else:
-            value = (yield next(iterable))
-        while value is not None:
-            values.append(value)
-            value = (yield None)
+    '''Wraps an iterable in a Politer if it is not already wrapped.'''
+    if isinstance(iterable, Politer):
+        return iterable
+    return Politer(iterable)
+
 
 def polite(func):
     '''Decorator function that wraps a generator function and makes it
-    'polite,' so that it can take values you send to it and put them on 'top'
-    of its stack of values, returning them first before continuing.
+    return a Politer object.
     '''
-    @wraps(func)
+    @functools.wraps(func)
     def wrapped(*args, **kwargs):
         return politer(func(*args, **kwargs))
     return wrapped
+
+
+def polite_arg(argument):
+    '''Decorator function that wraps an argument passed to the function.'''
+    def make_polite(func):
+        signature = inspect.signature(func)
+        @functools.wraps(func)
+        def wrapped(*args, **kwargs):
+            bound = signature.bind(*args, **kwargs)
+            bound.arguments[argument] = politer(bound.arguments[argument])
+            return func(*bound.args, **bound.kwargs)
+        return wrapped
+    return make_polite
+        
+
+
+class Politer(collections.Iterator, collections.Sequence):
+    '''
+    A 'polite' iterator object which provides many useful methods.
+
+    While generators often provide a cleaner approach to problems, their
+    indeterminate and temporal nature make some problems -- such as those
+    that require looking ahead or knowing the length of a sequence -- more
+    difficult. Politer is an attempt to provide methods for solving those
+    problems, in two ways:
+
+    1) It allows you to send values back to the generator, which will put
+    them on top of the 'stack'. As a convenience, it provides a prev()
+    method for the common use case of rewinding the generator exactly one
+    value.
+
+    2) It provides a 'lazy' implementation of the sequence protocol,
+    allowing you to get the politer's length, index into it, etc. just like
+    a list. The politer will internally unroll as much of the generator as
+    necessary in order to perform the requested operation. It also provides
+    some 'lazy' methods to avoid using the more exhaustive ones, such as
+    at_least() and popped().
+
+    Note that pulling values off the politer using next() will change its
+    length and the indices of the contained elements -- the politer is a
+    'list of uniterated values,' albeit with the ability to send values
+    back.
+
+    Politers use deques internally to hold their unrolled values. They
+    should perform well for relatively short-range looks ahead during
+    iteration, but if you intend to perform many sequence operations that
+    target the 'far end' of the generator, you will probably do better just
+    casting the generator to a list.
+    '''
+    
+    __slots__ = ['_generator', '_values', '_previous']
+    
+    def __init__(self, iterable):
+        '''Instantiates a Politer. 'iterable' is the object to wrap.'''
+        self._generator = iter(iterable)
+        self._values = collections.deque()
+        self._previous = None
+    
+    def __next__(self):
+        '''Gets the next value from the politer.'''
+        if self._values:
+            value = self._values.popleft()
+        else:
+            value = next(self._generator)
+        self._previous = value
+        return value
+        
+    def send(self, *values):
+        '''Puts values 'on top' of the politer, last-in-first-out.'''
+        self._values.extendleft(values)      
+        
+    def prev(self):
+        '''Rewinds the generator exactly one value. Not repeatable.'''
+        if self._previous is None:
+            raise StopIteration('politer.prev() is not repeatable')
+        self._values.appendleft(self._previous)
+        self._previous = None
+    
+    def at_least(self, length):
+        '''Lazily evaluates len(self) >= length.'''
+        return self._advance_until(lambda: len(self._values) >= length)
+        
+    def __len__(self):
+        '''Gets the length of the politer, dumping the generator to do so.'''
+        self._dump()
+        return len(self._values)
+    
+    def __getitem__(self, index):
+        '''Gets the value at a specific index, or gets a slice.
+        
+        Since deques can't be sliced, if a slice is requested we cast the
+        internal deque to a list and slice that, with the attendant
+        costs.'''
+        if isinstance(index, slice):
+            return self._getslice(index)
+        elif isinstance(index, int):
+            if not self._advance_until(lambda: len(self._values) > index):
+                raise IndexError("politer index out of range")
+            return self._values[index]
+        else:
+            raise TypeError("politer indices must be integers")
+            
+    def __contains__(self, value):
+        '''Lazily tests membership.'''
+        return self._advance_until(lambda: value in self._values)    
+        
+    def count(self, value):
+        '''Counts the occurrences of value in the politer.
+        
+        Dumps the generator.
+        '''
+        self._dump()
+        return self._values.count(value)
+        
+    def index(self, value, i=0, j=None):
+        '''Finds the first occurrence of value in the politer.
+        
+        Always dumps the generator. (Doesn't technically have to, but
+        doing it the right way was very complicated.)
+        '''
+        self._dump()
+        if j is None:
+            j = len(self._values)
+        return self._values.index(value, i, j)
+        
+    def close(self):
+        '''Closes the generator and discards all values.'''
+        self._generator.close()
+        del self._values
+        self._values = collections.deque()
+        
+    def pop(self):
+        '''Dumps the generator, then removes and returns the last item.'''
+        self._dump()
+        return self._values.pop()
+        
+    def popped(self, n=1):
+        '''Yields every item in the politer except the last n.'''
+        yield from self.takewhile(lambda _: self.at_least(n))
+        
+    def __nonzero__(self):
+        '''Returns True if there are any remaining values.'''
+        return self._advance_until(lambda: self._values)
+        
+    def takewhile(self, func):
+        '''As itertools, but preserves the failing element.'''
+        saved = None
+        for item in itertools.takewhile(func, self):
+            yield item
+            saved = item
+        if not func(self._previous):
+            self.prev()
+            if saved is not None:
+                self._previous = saved
+    
+    def takeuntil(self, func):
+        '''Opposite of takewhile.'''
+        yield from self.takewhile(lambda x: not func(x))
+        
+    def any(self, func):
+        '''True if func(any contained item) is true.'''
+        if any(filter(func, self._values)):
+            return True
+        elif not self._advance():
+            return False
+        else:
+            return self._advance_until(lambda: func(self._values[-1]))
+            
+    def all(self, func):
+        '''True if func(item) is true for all contained items.'''
+        return not self.any(lambda x: not func(x))
+             
+    def _getslice(self, sliceobj):
+        start = sliceobj.start if sliceobj.start is not None else 0
+        stop = sliceobj.stop if sliceobj.stop is not None else -1 # force dump
+        if start < 0 or stop < 0:                 
+            self._dump()                           
+        else:
+            self._advance_until(lambda: len(self._values) >= stop)
+        return list(self._values)[sliceobj]
+        
+    def _advance(self):
+        try:
+            self._values.append(next(self._generator))
+            return True
+        except StopIteration:
+            return False
+        
+    def _advance_until(self, func):
+        while not func():
+            if not self._advance():
+                return False
+        return True
+            
+    def _dump(self):
+        self._values.extend(self._generator)

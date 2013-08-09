@@ -2,9 +2,8 @@ import io
 import re
 import sys
 import textwrap
-import itertools
 import functools
-import politer
+from politer import polite, polite_arg
 
 ## Constants
 
@@ -13,9 +12,6 @@ max_match = 2 << 15
 
 # Regex to set the correct article.
 an_regex = r'\ba(?= [aeiou]| \"[aefhilmnorsxAEFHILMNORSX]\")'
-
-# Regex to remove quotes from input.
-quotes_regex = r'''^r?(["/'])(.*)\1$'''
 
 # Dictionary of special characters that can't be usefully printed.
 special_characters = {
@@ -84,138 +80,113 @@ debug = False
 ## Functions
 
 # Text-handling functions.
-
+    
 def line_and_indent(line):
-    '''Dedents a line, returns it with the amount of previous indentation.
-    '''
+    '''Dedents a line, returns it with the amount of indentation.'''
     stripped_line = line.lstrip()
     return stripped_line, len(line) - len(stripped_line)
 
 
 def is_bulleted(line):
-    '''True if the line begins with a bullet preceded by any amount of
-    indentation.
-    '''
+    '''True if the line, minus whitespace, begins with a bullet.'''
     return line.lstrip().startswith("*")
+    
+    
+def is_parenthesized(line):
+    '''True if the line starts with or ends with parentheses.'''
+    return line.startswith("(") or line.endswith(")")
+
+    
+def has_colon(line):
+    '''True if the line ends with a colon.'''
+    return line.endswith(":")
+
+
+def is_clause(line):
+    '''True if not parenthesized or bulleted.'''
+    return not (is_parenthesized(line) or is_bulleted(line))
 
 
 def quoted(string):
-    return concat('"', string, '"') 
-
-
-def concat(*args):
-    '''Concatenates its arguments. Quick wrapper for ''.join.
-    '''
-    return ''.join(args)
-
-
-def lookup_char(text_ordinal, checkdicts=True, longform=True):
-    if checkdicts:
-        for chardict in (special_characters, unusual_characters):
-            if text_ordinal in chardict:
-                return chardict[text_ordinal]
-    char = chr(int(text_ordinal))
-    if not longform:
-        return char
-    else:
-        return "the character {0}".format(quoted(char))
+    '''Wraps a string in quotes.'''
+    return '"' + string + '"'
     
-
-def quoted_chars(ordinals, concat=False):
-    chars = (lookup_char(ord, checkdicts=False, longform=False) for ord in
-            ordinals)
-    if not concat:
-        return [quoted(char) for char in chars]
-    else:
-        return quoted(concat(*chars))
-
     
-def inline_list(items, internal_sep="", ending_sep=""):
-    if internal_sep:
-        internal_sep += " "
-    separator = ", {0}".format(internal_sep)
-    if ending_sep:
-        items = list(conjoined(items, ending_sep))
-    if len(items) > 2:
-        return separator.join(items)
-    return " ".join(items)
+def lookup_char(text_ordinal):
+    '''Returns the character corresponding to an ordinal.'''
+    return chr(int(text_ordinal))
 
 
-def conjoined(items, conjunction):
-    item_list = list(items)
-    if len(item_list) < 3:
-        first_item, last_item = item_list[0], item_list[1]
-        yield "{0} {1} {2}".format(first_item, conjunction, last_item)
+@polite
+@polite_arg('lines')
+def split_by_clause(lines):
+    for line in lines:
+        clause = [line]
+        if is_parenthesized(line):
+            clause.extend(lines.takeuntil(is_clause))
+            if lines:
+                clause.append(next(lines))
+        else: 
+            if lines.any(is_clause):
+                clause.extend(lines.takewhile(is_bulleted))
+            else:
+                clause.extend(lines)
+        yield clause
+
+
+@polite
+def conjoin(lines, subord="", coord="", outro=""):
+    subord += " " if subord else ""
+    coord = coord + " " if coord else subord
+    clauses = split_by_clause(lines)
+    clause = next(clauses)
+    clause[-1] += ',' if clauses else outro
+    yield from clause
+    for clause in clauses:
+        clause[0] = (subord if clauses else coord) + clause[0]
+        clause[-1] += ',' if clauses else outro
+        yield from clause
+       
+        
+@polite
+@polite_arg('lines')
+def bullet_list(lines, intro="", outro="", subord="followed by", coord="",
+                collapse=True):
+    if collapse and not lines.at_least(2):
+        intro += " " if intro else ""
+        yield intro + lines[0] + outro
     else:
-        last_item = conjunction + " " + item_list.pop()
-        yield from item_list
-        yield last_item
-    
-
-def bullet_list(lines, intro="", ending="", collapse=True):
-    lines = list(lines)
-    if collapse and len(lines) == 1:
-        intro = intro + " " if intro else ""
-        yield intro + lines[0] + ending
-    else:
-        last_line = lines.pop()
+        lines = conjoin(lines, subord, coord, outro)
         if intro:
             yield intro + ":"
-        for line in lines:
-            leader = "  " if is_bulleted(line) else " * "
-            yield leader + line
-        leader = "  " if is_bulleted(last_line) else " * "
-        yield leader + last_line + ending
+        yield from (("  " if is_bulleted(line) else "  * ") + line
+                    for line in lines)
+    
 
-
-def clean_up_syntax(lines):
-    line = next(lines)
-    yield line
-    prev_line = line
-    for line in lines:
-        if not (is_bulleted(line) or line.startswith("(") or
-                prev_line.endswith(")") or line == "or:"):
-            line = "followed by " + line
-        yield line
-        prev_line = line
-
-
-def punctuate(lines):
-    lines = list(lines)
-    last_line = lines.pop() + "."
-    for line in lines:
-        if not line.endswith((":", ")")):
-            line = line + ","
-        yield line
-    yield last_line
-
-
-def wrapped_list(lines):
+@polite
+def clean(lines):
     wrapper = textwrap.TextWrapper()
     for line in lines:
+        line = re.sub(an_regex, 'an', line)
         stripped, indent = line_and_indent(line)
         wrapper.initial_indent = " " * indent
         wrapper.subsequent_indent = " " * (indent + 5)
         yield from wrapper.wrap(stripped)
-        
-
-def check_for_quotes(string):
-    return re.sub(quotes_regex, '\2', string)
 
 # Functions for getting and formatting the parse tree.
 
 @functools.lru_cache()
 def parse_regex(regex_string):
     '''Returns the parse tree for a regular expression, as a string.
-    
-    Rather than reinvent the wheel, 'parse_regex' just compiles the regex you
-    pass it with the debug flag set and temporarily redirects stdout to catch
-    the debug info.
-    
-    Because the regex compiler has a cache, if you attempt to compile the same
-    regular expression repeatedly, you won't get the debug info. To avoid this
-    problem, we purge the cache every time, and keep a cache for 'parse_regex'
-    instead.
+
+    Rather than reinvent the wheel, 'parse_regex' just compiles the regex
+    you pass it with the debug flag set and temporarily redirects stdout to
+    catch the debug info.
+
+    Because the regex compiler has a cache, if you attempt to compile the
+    same regular expression repeatedly, you won't get the debug info. To
+    avoid this problem, we purge the cache every time, and keep a cache for
+    'parse_regex' instead.
     '''
     re.purge()
     catch_debug_info = io.StringIO()
@@ -226,16 +197,12 @@ def parse_regex(regex_string):
     return catch_debug_info.getvalue()
     
 
-@politer.polite
+@polite
 def get_parse_tree(regex_string):
     '''Yields the parse tree for a regular expression, element by element.
     
     Indicates the beginning and end of a group of indented lines by generating
     fake 'start_grouping' and 'end_grouping' elements.
-    
-    'get_parse_tree' uses a 'politer' wrapper to allow us to send elements back
-    to it. This allows us to look ahead during translation so that we can
-    produce prettier output.
     '''
     last_indent = 0
     indented_tree = parse_regex(regex_string)
@@ -256,12 +223,12 @@ def get_parse_tree(regex_string):
 # Translation functions.
     
 def regex_repeat(lexemes, tree, delegate):
-    start_grouping(tree)
+    subset = start_grouping(tree)
     min, max = int(lexemes[1]), int(lexemes[2])
     greed = " (non-greedy)" if lexemes[0] == "min_repeat" else ""
     if min == max:
         if min == 1:
-            return next(translate(tree))
+            return next(subset)
         else:
             leadin = "{0} occurrences of".format(min)    
     elif max >= max_match:
@@ -274,10 +241,10 @@ def regex_repeat(lexemes, tree, delegate):
     else:
         leadin = "between {0} and {1}{2} occurrences of".format(min, max,
                                                                 greed)
-    subset = clean_up_syntax(translate(tree))
     return bullet_list(subset, leadin)
 
 
+@polite
 def collect_literals(tree):
     for item in tree:
         lexemes = item.split()
@@ -297,10 +264,9 @@ def regex_not_literal(lexemes, tree, delegate):
     set complements, we manually un-optimize the parse tree and then route the
     translation to the 'regex_in' function.
     '''
-    fake_elements = ['start_grouping 0', 'negate None',
-                     'literal ' + lexemes[1], 'end_grouping 0']
-    for element in reversed(fake_elements):
-        tree.send(element)
+    fake_elements = ['end_grouping 0', 'literal ' + lexemes[1],
+                     'negate None', 'start_grouping 0']
+    tree.send(*fake_elements)
     return regex_in(['in'], tree, delegate)
 
 
@@ -309,55 +275,57 @@ def regex_literal(lexemes, tree, delegate):
     if literals[0] not in special_characters:
         literals.extend(collect_literals(tree))
     if len(literals) == 1:
-        return lookup_char(literals[0])
-    elif delegate == 'set':
-        char_list = inline_list(quoted_chars(literals), ending_sep="or")
-        return "a {0} character".format(char_list)
+        for chardict in (special_characters, unusual_characters):
+            if literals[0] in chardict:
+                return chardict[literals[0]]
+        return "the character {0}".format(quoted(lookup_char(literals[0])))
     else:
-        characters = quoted_chars(literals, concat=True)
-        return "the characters {0}".format(characters)
+        chars = (lookup_char(literal) for literal in literals)
+        if delegate == 'set':
+            quoted_chars = [quoted(char) for char in chars]
+            sep = ", " if len(quoted_chars) > 2 else " "
+            quoted_chars[-1] = "or " + quoted_chars[-1]
+            return "a {0} character".format(sep.join(quoted_chars))
+        else:
+            chars = quoted(''.join(chars))
+            return "the characters {0}".format(chars)
 
 
 def regex_in(lexemes, tree, delegate):
-    start_grouping(tree)
-    modifier = next(tree)
-    if modifier == 'negate None':
-        intro = "any character except "
+    set_items = start_grouping(tree, delegate='set')
+    if tree[0] == 'negate None':
+        next(tree)
+        complement = True
     else:
-        intro = ""
-        tree.send(modifier)
-    set_items = list(translate(tree, delegate='set'))
-    if len(set_items) == 1:
+        complement = False
+    intro = "any character except " if complement else ""
+    if not set_items.at_least(2):
         item = set_items[0]
-        if modifier == 'negate None' and item in categories.values():
+        if complement and item in categories.values():
             return category_complements[item]
         else:
             return intro + item
     else:
-        conjoined_descs = conjoined(set_items, "or")
-        return bullet_list(conjoined_descs, intro + "one of the following")
+        intro += "one of the following"
+        return bullet_list(set_items, intro, subord="", coord="or")
  
  
 def regex_category(lexemes, tree, delegate):
     cat_type = lexemes[1]
-    no_such_category = "an unknown category: {0}".format(cat_type)
-    return categories.get(cat_type, no_such_category)
+    no_such_category = "an unknown category: {0}"
+    return categories.get(cat_type, no_such_category.format(cat_type))
 
 
 def regex_subpattern(lexemes, tree, delegate):
-    start_grouping(tree)
+    subpattern = start_grouping(tree)
     pattern_name = lexemes[1]
     if pattern_name == 'None':
-        next_element = next(tree)
-        next_lexemes = next_element.split()
-        if next_lexemes[0] == 'groupref_exists':
-            return regex_groupref_exists(next_lexemes, tree, delegate)
+        if tree[0].startswith('groupref_exists'):
+            return next(subpattern)
         else:
-            tree.send(next_element)
             subpattern_intro = "a non-captured subgroup consisting of"
     else:
         subpattern_intro = "subgroup #{0}, consisting of".format(pattern_name)
-    subpattern = clean_up_syntax(translate(tree))
     return bullet_list(subpattern, subpattern_intro)
 
 
@@ -371,35 +339,21 @@ def regex_any(lexemes, tree, delegate):
 
 
 def regex_assert(lexemes, tree, delegate):
-    start_grouping(tree)
+    asserted = start_grouping(tree)
     positive = lexemes[0] == 'assert'
     lookahead = lexemes[1] == '1'
     direction = ("we could {0}now match" if lookahead else
                  "we could {0}have just matched")
     positivity = "" if positive else "not "
     assertion = "(if " + direction.format(positivity)
-    asserted = clean_up_syntax(translate(tree))
     return bullet_list(asserted, assertion, ending=")")
 
 
 def regex_branch(lexemes, tree, delegate):
-    start_grouping(tree)
-    branch = translate(tree)
-    branches = []
-    first_branch = list(bullet_list(clean_up_syntax(branch), "either",
-                        collapse=False))
-    branches.append(first_branch)
-    for item in tree:
-        if item != "or":
-            tree.send(item)
-            break
-        start_grouping(tree)
-        branch = translate(tree)
-        new_branch = list(bullet_list(clean_up_syntax(branch), "or",
-                          collapse=False))
-        branches.append(new_branch[:])
-    return itertools.chain(*branches)
-
+    leadin = 'either' if lexemes[0] == 'branch' else 'or'
+    branch = start_grouping(tree)
+    return bullet_list(branch, leadin, collapse=False)
+    
     
 def regex_at(lexemes, tree, delegate):
     location = lexemes[1]
@@ -409,23 +363,23 @@ def regex_at(lexemes, tree, delegate):
     
 def regex_groupref_exists(lexemes, tree, delegate):
     '''Handle the 'groupref_exists' element (as well as can be expected).
-    
-    The 'groupref_exists' element corresponds to the (?(id)pattern) syntax, and
-    indicates a match that should be expected only if the given group was
-    successfully matched earlier in the pattern. To handle it, we remove the
-    start_grouping element, identify the group being referenced, iterate
-    through the tree until we reach the end of the subgroup, and then produce
-    a sublist of the elements in the conditional match.
-    
-    Note that we do not support the (?(id)true-pattern|false-pattern) syntax,
-    because the 're' module itself does not correctly support it. You can test
-    this using the examples given in the 're' documentation, which do not work!
-    The parse tree produced by the compiler forgets to include the branch
-    marker between the true and false patterns, so they get run together.
+
+    The 'groupref_exists' element corresponds to the (?(id)pattern) syntax,
+    and indicates a match that should be expected only if the given group
+    was successfully matched earlier in the pattern. To handle it, we remove
+    the start_grouping element, identify the group being referenced, iterate
+    through the tree until we reach the end of the subgroup, and then
+    produce a sublist of the elements in the conditional match.
+
+    Note that we do not support the (?(id)true-pattern|false-pattern)
+    syntax, because the 're' module itself does not correctly support it.
+    You can test this using the examples given in the 're' documentation,
+    which do not work! The parse tree produced by the compiler forgets to
+    include the branch marker between the true and false patterns, so they
+    get run together.
     '''
-    start_grouping(tree)
+    conditional_group = start_grouping(tree)
     group_name = lexemes[1]
-    conditional_group = clean_up_syntax(translate(tree))
     condition = "the subgroup (only if group #{0} was found earlier)"
     return bullet_list(conditional_group, condition.format(group_name))
 
@@ -433,13 +387,13 @@ def regex_groupref_exists(lexemes, tree, delegate):
 def regex_range(lexemes, tree, delegate):
     range_regex = r'[0-9]+'
     range_values = (re.findall(range_regex, lexeme) for lexeme in lexemes[1:])
-    range_limits = quoted_chars(val[0] for val in range_values)
+    range_limits = (quoted(lookup_char(val[0])) for val in range_values)
     range_desc = "a character between {0} and {1}"
     return range_desc.format(*range_limits)
     
 # Some fake 'translation' functions to help iterate over the flattened tree.
 
-def start_grouping(tree):
+def start_grouping(tree, delegate=None):
     '''Verify that the next element is a 'start_grouping' element and remove
     it.
     
@@ -450,6 +404,7 @@ def start_grouping(tree):
     '''
     if next(tree) != 'start_grouping 0':
         raise ValueError
+    return translate(tree, delegate)
     
     
 def unexpected_start_grouping(lexemes, tree, delegate):
@@ -462,10 +417,13 @@ def unexpected_start_grouping(lexemes, tree, delegate):
     iterate into the tree to find and remove the 'end_grouping' element we know
     is there, then restore the other elements.
     '''
-    elements = list(itertools.takewhile(lambda line: line != 'end_grouping 0',
-                                        tree))
-    for element in reversed(elements):
-        tree.send(element)
+    elements = []
+    for item in tree:
+        if item == 'end_grouping 0':
+            break
+        else:
+            elements.append(item)
+    tree.send(*reversed(elements))
     return "(warning, some elements may not appear correctly grouped)"
 
     
@@ -480,9 +438,7 @@ def end_grouping(lexemes, tree, delegate):
     
 # The translation dictionary. Dispatch table between regex parser elements
 # and translation functions.
-# Because this dictionary contains all the regex functions, it has to come
-# after them, even though it's a constant. Sorry!
-    
+
 translation = {
     'max_repeat': regex_repeat,
     'min_repeat': regex_repeat,
@@ -499,10 +455,13 @@ translation = {
     'assert_not': regex_assert,
     'at': regex_at,
     'branch': regex_branch,
+    'or': regex_branch,
     'range': regex_range,
     'groupref_exists': regex_groupref_exists,
 }
 
+
+@polite
 def translate(tree, delegate=None):
     '''Given a parse tree, yields the translation for each element.
     
@@ -527,17 +486,16 @@ def translate(tree, delegate=None):
             if isinstance(result, str):
                 yield result
             else:
-                yield from result          
+                yield from result
 
-# The functions that do the actual work!
+# The outward-facing function.
+
+def check_for_quotes(string):
+    return re.sub(r'''^r?(["/'])(.*)\1$''', '\2', string)
 
 def speak(regex_string=None, clean_quotes=True):
     '''Given a regular expression, prints the translation for that regular
     expression.
-    
-    'speak' gets the parse tree for the regular expression, produces the list
-    of elements, runs it through a bunch of text-formatting functions, and
-    prints it out.
     
     clean_quotes: If true, checks if the given regular expression is enclosed
     in quotation marks and removes them before translating it.
@@ -548,13 +506,11 @@ def speak(regex_string=None, clean_quotes=True):
         regex_string = check_for_quotes(regex_string)
     tree = get_parse_tree(regex_string)
     translation = translate(tree)
-    syntax_pass = clean_up_syntax(translation)
-    punctuation_pass = punctuate(syntax_pass)
     speech_intro = "This regular expression will match"
-    bulleted_translation = bullet_list(punctuation_pass, speech_intro)
-    final_translation = wrapped_list(bulleted_translation)
+    translation_list = bullet_list(translation, intro=speech_intro, outro=".")
+    output = clean(translation_list)
     try:
-        print("\n".join(final_translation))
+        print("\n".join(output))
     except re.error as err:
         sys.stdout = sys.__stdout__
         print("Unfortunately, your regular expression is not valid, because it"
