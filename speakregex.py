@@ -11,7 +11,7 @@ from politer import polite, polite_arg
 max_match = 2 << 15
 
 # Regex to set the correct article.
-an_regex = r'\ba(?= [aeiou]| \"[aefhilmnorsxAEFHILMNORSX]\")'
+an_regex = re.compile(r'\ba(?= [aeiou]| \"[aefhilmnorsxAEFHILMNORSX]\")')
 
 # Dictionary of special characters that can't be usefully printed.
 special_characters = {
@@ -167,7 +167,7 @@ def bullet_list(lines, intro="", outro="", subord="followed by", coord="",
 def clean(lines):
     wrapper = textwrap.TextWrapper()
     for line in lines:
-        line = re.sub(an_regex, 'an', line)
+        line = an_regex.sub('an', line)
         stripped, indent = line_and_indent(line)
         wrapper.initial_indent = " " * indent
         wrapper.subsequent_indent = " " * (indent + 5)
